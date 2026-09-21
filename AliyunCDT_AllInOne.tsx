@@ -19,6 +19,9 @@ import {
   HStack,
   ZStack,
   Text,
+  Image,
+  ProgressView,
+  Circle,
   Button,
   Spacer,
   Divider,
@@ -332,10 +335,19 @@ async function toggleECS(action: "start" | "stop", config: AppConfig) {
 
 function NotConfiguredWidget() {
   return (
-    <VStack alignment="leading" spacing={4}>
-      <Text font="headline" bold foregroundColor="#FF9F0A">
-        ⚙️ 待配置
-      </Text>
+    <VStack
+      alignment="leading"
+      spacing={6}
+      padding={14}
+      widgetBackground="systemBackground"
+      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
+    >
+      <HStack spacing={6} alignment="center">
+        <Image systemName="gearshape.fill" font={14} foregroundStyle="systemOrange" />
+        <Text font="subheadline" bold foregroundColor="#FF9F0A">
+          尚未配置
+        </Text>
+      </HStack>
       <Text font="caption2" foregroundColor="#8E8E93">
         请在 Scripting 中打开此脚本完成阿里云凭据配置。
       </Text>
@@ -351,26 +363,40 @@ function SmallWidget({ data }: { data: MonitorData }) {
   const isRunning = data.ecsStatus === "Running"
 
   return (
-    <VStack alignment="leading" spacing={6}>
-      <HStack>
-        <Text font="caption2" foregroundColor="#8E8E93">
-          ☁️ CDT 流量
-        </Text>
+    <VStack
+      alignment="leading"
+      spacing={6}
+      padding={{ horizontal: 14, vertical: 12 }}
+      widgetBackground="systemBackground"
+      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
+    >
+      {/* 顶部标题与状态 */}
+      <HStack alignment="center">
+        <HStack spacing={4} alignment="center">
+          <Image systemName="cloud.fill" font={12} foregroundStyle="systemBlue" />
+          <Text font="caption2" bold foregroundColor="#8E8E93">
+            CDT 流量
+          </Text>
+        </HStack>
         <Spacer />
-        <Text font="caption2">
-          {isRunning ? "🟢" : "🔴"} {isRunning ? "运行中" : "已停止"}
-        </Text>
+        <HStack spacing={4} alignment="center">
+          <Circle fill={isRunning ? "#30D158" : "#8E8E93"} frame={{ width: 6, height: 6 }} />
+          <Text font="caption2" bold foregroundColor={isRunning ? "#30D158" : "#8E8E93"}>
+            {isRunning ? "运行中" : "已关机"}
+          </Text>
+        </HStack>
       </HStack>
 
       <Spacer />
 
+      {/* 核心用量数据 */}
       <VStack alignment="leading" spacing={2}>
         <HStack alignment="bottom" spacing={2}>
-          <Text font="title" bold foregroundColor={data.color}>
+          <Text font={24} bold foregroundColor={data.color}>
             {data.totalGB.toFixed(1)}
           </Text>
-          <Text font="footnote" foregroundColor="#8E8E93">
-            / {data.thresholdGB} GB
+          <Text font="caption2" foregroundColor="#8E8E93" padding={{ bottom: 2 }}>
+            / {data.thresholdGB}G
           </Text>
         </HStack>
         <Text font="caption2" foregroundColor="#8E8E93">
@@ -378,25 +404,17 @@ function SmallWidget({ data }: { data: MonitorData }) {
         </Text>
       </VStack>
 
-      <ZStack alignment="leading">
-        <HStack
-          frame={{ height: 5, maxWidth: "infinity" }}
-          background="rgba(142, 142, 147, 0.25)"
-          cornerRadius={2.5}
-        />
-        <HStack
-          frame={{
-            height: 5,
-            width: `${Math.max(4, Math.min(100, data.percentage))}%`
-          }}
-          background={data.color}
-          cornerRadius={2.5}
-        />
-      </ZStack>
+      {/* 原生线性进度条 */}
+      <ProgressView
+        value={Math.max(0.01, Math.min(1.0, data.percentage / 100))}
+        tint={data.color as any}
+        frame={{ height: 5 }}
+      />
 
       <Spacer />
 
-      <HStack>
+      {/* 底部重置倒计时 */}
+      <HStack alignment="center">
         <Text font="caption2" foregroundColor="#8E8E93">
           距重置:
         </Text>
@@ -413,30 +431,42 @@ function MediumWidget({ data }: { data: MonitorData }) {
   const isRunning = data.ecsStatus === "Running"
 
   return (
-    <VStack alignment="leading" spacing={8}>
-      <HStack>
-        <Text font="headline" bold>
-          ☁️ 阿里云 CDT 监控
-        </Text>
+    <VStack
+      alignment="leading"
+      spacing={8}
+      padding={{ horizontal: 16, vertical: 12 }}
+      widgetBackground="systemBackground"
+      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
+    >
+      {/* 顶部标题与 ECS 状态指示 */}
+      <HStack alignment="center">
+        <HStack spacing={6} alignment="center">
+          <Image systemName="cloud.fill" font={14} foregroundStyle="systemBlue" />
+          <Text font="headline" bold foregroundStyle="label">
+            阿里云 CDT 监控
+          </Text>
+        </HStack>
         <Spacer />
         <HStack
-          padding={{ top: 2, bottom: 2, leading: 6, trailing: 6 }}
+          padding={{ top: 3, bottom: 3, leading: 8, trailing: 8 }}
           background="rgba(142, 142, 147, 0.15)"
-          cornerRadius={6}
-          spacing={4}
+          cornerRadius={12}
+          spacing={5}
+          alignment="center"
         >
-          <Text font="caption2">{isRunning ? "🟢" : "🔴"}</Text>
-          <Text font="caption2" bold foregroundColor={isRunning ? "#30D158" : "#8E8E93"}>
+          <Circle fill={isRunning ? "#30D158" : "#8E8E93"} frame={{ width: 7, height: 7 }} />
+          <Text font={11} bold foregroundColor={isRunning ? "#30D158" : "#8E8E93"}>
             ECS {isRunning ? "运行中" : "已关机"}
           </Text>
         </HStack>
       </HStack>
 
-      <HStack alignment="bottom" spacing={8}>
-        <Text font="largeTitle" bold foregroundColor={data.color}>
+      {/* 核心用量指标与百分比 */}
+      <HStack alignment="bottom" spacing={6}>
+        <Text font={28} bold foregroundColor={data.color}>
           {data.totalGB.toFixed(1)}
         </Text>
-        <Text font="subheadline" foregroundColor="#8E8E93" padding={{ bottom: 4 }}>
+        <Text font="footnote" foregroundColor="#8E8E93" padding={{ bottom: 3 }}>
           GB / {data.thresholdGB} GB
         </Text>
         <Spacer />
@@ -450,30 +480,22 @@ function MediumWidget({ data }: { data: MonitorData }) {
         </VStack>
       </HStack>
 
-      <ZStack alignment="leading">
-        <HStack
-          frame={{ height: 6, maxWidth: "infinity" }}
-          background="rgba(142, 142, 147, 0.2)"
-          cornerRadius={3}
-        />
-        <HStack
-          frame={{
-            height: 6,
-            width: `${Math.max(3, Math.min(100, data.percentage))}%`
-          }}
-          background={data.color}
-          cornerRadius={3}
-        />
-      </ZStack>
+      {/* 原生线性进度条 */}
+      <ProgressView
+        value={Math.max(0.01, Math.min(1.0, data.percentage / 100))}
+        tint={data.color as any}
+        frame={{ height: 6 }}
+      />
 
       <Spacer />
 
-      <HStack alignment="center">
+      {/* 底部详细信息栏 */}
+      <HStack alignment="center" spacing={4}>
         <Text font="caption2" foregroundColor="#8E8E93">
-          距重置:
+          距结算重置:
         </Text>
         <Text font="caption2" bold foregroundColor="#0A84FF">
-          {data.daysRemaining}天
+          {data.daysRemaining} 天
         </Text>
         <Text font="caption2" foregroundColor="#8E8E93">
           · 建议日均:
