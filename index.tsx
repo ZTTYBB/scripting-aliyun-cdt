@@ -1018,11 +1018,15 @@ function ConsoleView() {
   // 2. 主控制台展示 (Apple iOS 26 Liquid Glass Architecture)
   return (
     <NavigationStack>
-      <ScrollView background="#F2F2F7" showsIndicators={false}>
+      <ScrollView
+        background="#F2F2F7"
+        showsIndicators={false}
+        safeAreaPadding={{ bottom: true }}
+      >
         <VStack
           alignment="leading"
-          spacing={16}
-          padding={{ horizontal: 16, top: 12, bottom: 40 }}
+          spacing={14}
+          padding={{ horizontal: 16, top: 12, bottom: 20 }}
         >
           {/* 顶部标题与设置入口 */}
           <HStack alignment="center" padding={{ horizontal: 4, bottom: 2 }}>
@@ -1061,13 +1065,26 @@ function ConsoleView() {
 
           {errorMessage && (
             <HStack
+              alignment="top"
+              spacing={8}
               padding={{ horizontal: 16, vertical: 12 }}
               background="rgba(255, 59, 48, 0.10)"
               border={{ style: "rgba(255, 59, 48, 0.25)", width: 0.75 }}
               clipShape={{ type: "rect", cornerRadius: 16, style: "continuous" }}
             >
-              <Text font="caption1" bold foregroundColor="#FF3B30">
-                ⚠️ {errorMessage}
+              <Image
+                systemName="exclamationmark.triangle.fill"
+                font={13}
+                foregroundStyle="#FF3B30"
+              />
+              <Text
+                font="caption1"
+                bold
+                foregroundColor="#FF3B30"
+                lineLimit={3}
+                frame={{ maxWidth: Infinity, alignment: "leading" }}
+              >
+                {errorMessage}
               </Text>
             </HStack>
           )}
@@ -1089,6 +1106,7 @@ function ConsoleView() {
             clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
             shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
             spacing={0}
+            frame={{ maxWidth: Infinity, alignment: "leading" }}
           >
             {/* 实例信息行 */}
             <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
@@ -1148,15 +1166,6 @@ function ConsoleView() {
                   {data?.publicIp || "未分配公网 IP"}
                 </Text>
               </VStack>
-              <HStack
-                padding={{ horizontal: 9, vertical: 4 }}
-                background="rgba(142, 142, 147, 0.10)"
-                clipShape={{ type: "capsule" }}
-              >
-                <Text font="caption2" bold foregroundColor="#6C6C70">
-                  {config.regionId}
-                </Text>
-              </HStack>
             </HStack>
 
             <Divider padding={{ horizontal: 16 }} />
@@ -1277,6 +1286,7 @@ function ConsoleView() {
             clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
             shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
             spacing={0}
+            frame={{ maxWidth: Infinity, alignment: "leading" }}
           >
             {/* 流量主数据 (基线对齐 items-baseline，修复 [object Object] Bug) */}
             <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
@@ -1385,9 +1395,17 @@ function ConsoleView() {
               </HStack>
             )}
           </VStack>
-          <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 8, bottom: 4 }}>
-            🛡️ 自动熔断：当出网流量达到 {config.trafficThresholdGB} GB 时将自动停止 ECS 实例防止产生账单。
-          </Text>
+          <HStack alignment="top" spacing={8} padding={{ leading: 8, bottom: 4 }}>
+            <Image systemName="shield.fill" font={12} foregroundStyle="#8E8E93" />
+            <Text
+              font={12}
+              foregroundColor="#8E8E93"
+              lineLimit={3}
+              frame={{ maxWidth: Infinity, alignment: "leading" }}
+            >
+              自动熔断：当出网流量达到 {config.trafficThresholdGB} GB 时将自动停止 ECS 实例防止产生账单。
+            </Text>
+          </HStack>
 
           {/* Section 3: 控制台实时操作日志 */}
           <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
@@ -1422,22 +1440,27 @@ function ConsoleView() {
             </Button>
           </HStack>
 
-          {/* 日志容器：固定最大高度，内部平滑滚动，等宽排版 */}
+          {/* 日志容器：固定高度，内部滚动并限制长行 */}
           <VStack
             background="#FFFFFF"
             clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
             shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
             spacing={0}
             padding={{ horizontal: 16, vertical: 12 }}
-            frame={{ maxHeight: 180 }}
+            frame={{ maxWidth: Infinity, height: 156, alignment: "leading" }}
           >
-            <ScrollView showsIndicators={false}>
-              <VStack alignment="leading" spacing={8}>
+            <ScrollView showsIndicators={false} frame={{ maxWidth: Infinity, height: 132 }}>
+              <VStack alignment="leading" spacing={6} frame={{ maxWidth: Infinity, alignment: "leading" }}>
                 {logs.length > 0 ? (
                   logs.map((log, index) => (
-                    <HStack key={index} spacing={6} alignment="top">
+                    <HStack key={index} spacing={6} alignment="top" frame={{ maxWidth: Infinity, alignment: "leading" }}>
                       <Text font={11} foregroundColor="#8E8E93">•</Text>
-                      <Text font={11} foregroundColor="#636366">
+                      <Text
+                        font={11}
+                        foregroundColor="#636366"
+                        lineLimit={2}
+                        frame={{ maxWidth: Infinity, alignment: "leading" }}
+                      >
                         {log}
                       </Text>
                     </HStack>
