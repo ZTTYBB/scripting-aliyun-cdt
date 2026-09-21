@@ -4,6 +4,16 @@
 
 ---
 
+## 🚀 一键安装 (快速导入)
+
+在已安装 **Scripting** 的 iPhone / iPad 上，点击下方链接即可自动跳转 Scripting 并完成安装：
+
+👉 **[📥 点击一键导入到 Scripting](https://scripting.fun/import_scripts?urls=%5B%22https%3A%2F%2Fraw.githubusercontent.com%2FZTTYBB%2Fscripting-aliyun-cdt%2Fmain%2FAliyunCDT.scripting%22%5D)**
+
+> 💡 **原理说明**：Scripting 官方的一键导入协议 (`https://scripting.fun/import_scripts?urls=...`) 依赖打包好的 `.scripting` 格式包（内含 `script.json`、`index.tsx`、`widget.tsx` 等入口配置）。本仓库已生成并发布标准的 `AliyunCDT.scripting` 安装包。
+
+---
+
 ## 🌟 核心特性
 
 - **🔒 零硬编码 & 隐私安全**：代码中不包含任何个人密钥，首次打开脚本自动弹出配置面板，凭据仅存储在用户 iPhone 本地 `Storage` 中，绝不上云。
@@ -16,12 +26,12 @@
 
 ## 📲 安装与使用方法
 
-### 方式 A：单文件直接导入（最快）
+### 方式 1：一键导入（最推荐）
 
-1. 复制 [`AliyunCDT_AllInOne.tsx`](./AliyunCDT_AllInOne.tsx) 的全部代码；
-2. 打开 iPhone 上的 **Scripting** App，点击右上角新建脚本；
-3. 粘贴代码并保存，点击运行；
-4. 首次运行时会自动弹出设置面板，填入您的阿里云：
+1. 在手机 Safari 中打开本仓库，点击上方的 **[📥 点击一键导入到 Scripting](https://scripting.fun/import_scripts?urls=%5B%22https%3A%2F%2Fraw.githubusercontent.com%2FZTTYBB%2Fscripting-aliyun-cdt%2Fmain%2FAliyunCDT.scripting%22%5D)** 链接；
+2. 系统将自动唤起 **Scripting** App 并提示导入；
+3. 点击确认导入后，在脚本列表中点开 **AliyunCDT**；
+4. 首次运行会自动弹出配置面板，填入您的阿里云：
    - **AccessKey ID**
    - **AccessKey Secret**
    - **地域 ID**（如 `cn-hongkong`）
@@ -29,14 +39,11 @@
    - **流量阈值 (GB)**（默认 `180`）
 5. 点击“保存配置”，即可立即进入控制台并同步生效到小组件！
 
-### 方式 B：作为项目文件夹导入
+### 方式 2：单文件直接复制
 
-1. 将 `AliyunCDTMonitor` 文件夹导入至手机 Files 应用中的 `Scripting` 目录；
-2. 文件夹包含：
-   - `index.tsx`：App 内主控制台与设置面板；
-   - `widget.tsx`：桌面小组件渲染逻辑；
-   - `config.ts`：配置与 Storage 持久化管理；
-   - `aliyun.ts`：HMAC-SHA1 签名与 POP API 客户端。
+1. 复制 [`AliyunCDT_AllInOne.tsx`](./AliyunCDT_AllInOne.tsx) 的全部代码；
+2. 打开 iPhone 上的 **Scripting** App，点击右上角新建脚本；
+3. 粘贴代码并保存，点击运行即可。
 
 ---
 

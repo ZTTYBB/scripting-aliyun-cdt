@@ -1,0 +1,16 @@
+{
+  "name": "AliyunCDT",
+  "localizedNames": {
+    "zh": "阿里云 CDT 监控",
+    "en": "Aliyun CDT Monitor"
+  },
+  "icon": "cloud.fill",
+  "color": "rgba(10, 132, 255, 1.00)",
+  "version": "1.0.0",
+  "runInApp": true,
+  "description": "阿里云 CDT 公网出网流量监控与 ECS 实例远程智能控制台。",
+  "localizedDescriptions": {
+    "zh": "阿里云 CDT 公网出网流量监控与 ECS 实例远程智能控制台。",
+    "en": "Alibaba Cloud CDT Traffic Monitor & ECS Smart Controller."
+  }
+}
