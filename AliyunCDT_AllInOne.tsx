@@ -545,7 +545,7 @@ function SettingsComponent({
         if (typeof Dialog !== "undefined" && Dialog.alert) {
           await Dialog.alert({
             title: "剪贴板为空",
-            message: "请先在微信、备忘录中复制包含阿里云 AccessKey 或实例 ID 的文本，再点击智能识别。"
+            message: "请先在微信或备忘录中复制包含阿里云 AccessKey 或实例 ID 的文本，再点击智能识别。"
           })
         } else {
           setErrorNotice("剪贴板为空，请先复制凭据信息。")
@@ -554,27 +554,23 @@ function SettingsComponent({
       }
 
       let count = 0
-      // 匹配 AccessKey ID: LTAI 开头，16-24 位字符
       const akMatch = text.match(/LTAI[A-Za-z0-9]{16,24}/i)
       if (akMatch) {
         setAk(akMatch[0].trim())
         count++
       }
 
-      // 匹配 ECS 实例 ID: i- 开头，16-24 位字符
       const ecsMatch = text.match(/i-[a-z0-9]{16,24}/i)
       if (ecsMatch) {
         setEcsId(ecsMatch[0].trim())
         count++
       }
 
-      // 匹配 Region ID
       const regMatch = text.match(/(cn-[a-z0-9-]+|ap-[a-z0-9-]+|us-[a-z0-9-]+)/i)
       if (regMatch) {
         setRegion(regMatch[0].trim())
       }
 
-      // 匹配 AccessKey Secret (通常位于 Secret 关键字之后，或 28-34 位随机字符串)
       const secretLabelMatch = text.match(/(?:Secret|SecretKey|KeySecret)[\s:=]*([A-Za-z0-9]{28,34})/i)
       if (secretLabelMatch) {
         setSk(secretLabelMatch[1].trim())
@@ -652,84 +648,103 @@ function SettingsComponent({
   }
 
   return (
-    <ScrollView>
-      <VStack alignment="leading" spacing={16} padding={16}>
-        {/* 顶部导航 */}
-        <HStack>
-          <Text font="title2" bold>
-            ⚙️ 阿里云参数配置
+    <ScrollView background="#F2F2F7">
+      <VStack alignment="leading" spacing={0} padding={{ horizontal: 16, vertical: 12 }}>
+        {/* 顶部导航栏 (仿 iOS 原生设置顶栏) */}
+        <HStack alignment="center" padding={{ bottom: 12 }}>
+          {isConfigReady(currentConfig) ? (
+            <Button
+              action={onCancel}
+              buttonStyle="plain"
+              frame={{ width: 36, height: 36 }}
+            >
+              <ZStack frame={{ width: 36, height: 36 }} background="rgba(142, 142, 147, 0.18)" cornerRadius={18}>
+                <Image systemName="chevron.backward" font={15} fontWeight="bold" foregroundStyle="#007AFF" />
+              </ZStack>
+            </Button>
+          ) : (
+            <Spacer frame={{ width: 36 }} />
+          )}
+          <Spacer />
+          <Text font="headline" bold foregroundColor="#000000">
+            参数配置
           </Text>
           <Spacer />
-          {isConfigReady(currentConfig) && (
-            <Button title="取消" font="subheadline" action={onCancel} />
-          )}
-        </HStack>
-
-        <Text font="caption1" foregroundColor="#8E8E93">
-          所有凭据仅保存在您手机本机的 Scripting 隔离存储空间中，绝不上云或外泄。
-        </Text>
-
-        {/* 快捷智能导入卡片 */}
-        <HStack
-          padding={12}
-          background="rgba(10, 132, 255, 0.12)"
-          cornerRadius={12}
-          alignment="center"
-        >
-          <VStack alignment="leading" spacing={2} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-            <Text font="subheadline" bold foregroundColor="#0A84FF">
-              📋 智能剪贴板识别
-            </Text>
-            <Text font="caption2" foregroundColor="#8E8E93">
-              在手机上复制包含 AK、Secret、实例ID 的文本后点此自动填入
-            </Text>
-          </VStack>
           <Button
-            title="一键识别"
-            buttonStyle="borderedProminent"
-            controlSize="regular"
-            action={handleSmartPaste}
+            title="保存"
+            font="headline"
+            buttonStyle="plain"
+            foregroundColor="#007AFF"
+            action={handleSave}
           />
         </HStack>
 
-        {/* 错误提示条 */}
+        {/* 提示横幅 */}
         {errorNotice && (
-          <HStack padding={10} background="rgba(255, 69, 58, 0.12)" cornerRadius={8}>
-            <Text font="caption2" foregroundColor="#FF453A">
+          <HStack padding={12} background="rgba(255, 59, 48, 0.12)" cornerRadius={10} padding={{ bottom: 10 }}>
+            <Text font="caption1" bold foregroundColor="#FF3B30">
               ⚠️ {errorNotice}
             </Text>
           </HStack>
         )}
-
-        {/* 成功提示条 */}
         {successNotice && (
-          <HStack padding={10} background="rgba(48, 209, 88, 0.12)" cornerRadius={8}>
-            <Text font="caption2" foregroundColor="#30D158">
+          <HStack padding={12} background="rgba(52, 199, 89, 0.12)" cornerRadius={10} padding={{ bottom: 10 }}>
+            <Text font="caption1" bold foregroundColor="#34C759">
               {successNotice}
             </Text>
           </HStack>
         )}
 
-        {/* 字段输入卡片列表 */}
-        <VStack spacing={12} frame={{ maxWidth: "infinity" }}>
-          {/* AccessKey ID */}
-          <HStack
-            padding={12}
-            background="rgba(142, 142, 147, 0.12)"
-            cornerRadius={10}
-            alignment="center"
-          >
-            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-              <Text font="caption2" bold foregroundColor="#8E8E93">
-                AccessKey ID (LTAI 开头)
+        {/* Section 1: 智能识别 */}
+        <HStack padding={{ leading: 8, bottom: 6, top: 4 }} alignment="center">
+          <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
+            快捷导入
+          </Text>
+        </HStack>
+        <VStack background="#FFFFFF" cornerRadius={12} spacing={0}>
+          <HStack padding={{ horizontal: 14, vertical: 12 }} alignment="center" spacing={12}>
+            <ZStack frame={{ width: 30, height: 30 }} background="#007AFF" cornerRadius={7}>
+              <Image systemName="doc.on.clipboard.fill" font={15} foregroundStyle="#FFFFFF" />
+            </ZStack>
+            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold>
+                智能剪贴板识别
               </Text>
-              <Text
-                font="subheadline"
-                bold
-                foregroundColor={ak ? "#FFFFFF" : "#0A84FF"}
-                lineLimit={1}
-              >
-                {ak ? ak : "轻点右侧按钮输入 >"}
+              <Text font="caption2" foregroundColor="#8E8E93">
+                自动提取复制文本中的 AK、SK 与实例 ID
+              </Text>
+            </VStack>
+            <Button
+              title="一键识别"
+              buttonStyle="borderedProminent"
+              controlSize="small"
+              tint="#007AFF"
+              action={handleSmartPaste}
+            />
+          </HStack>
+        </VStack>
+        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 6, bottom: 12 }}>
+          复制包含阿里云凭据的文本后轻点此处，自动提取填入下方所有字段。
+        </Text>
+
+        {/* Section 2: 访问凭据 */}
+        <HStack padding={{ leading: 8, bottom: 6 }} alignment="center">
+          <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
+            阿里云访问凭据
+          </Text>
+        </HStack>
+        <VStack background="#FFFFFF" cornerRadius={12} spacing={0}>
+          {/* AccessKey ID */}
+          <HStack padding={{ horizontal: 14, vertical: 12 }} alignment="center" spacing={12}>
+            <ZStack frame={{ width: 30, height: 30 }} background="#FF9500" cornerRadius={7}>
+              <Image systemName="key.fill" font={15} foregroundStyle="#FFFFFF" />
+            </ZStack>
+            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold>
+                AccessKey ID
+              </Text>
+              <Text font="caption2" foregroundColor={ak ? "#8E8E93" : "#007AFF"} lineLimit={1}>
+                {ak ? ak : "轻点右侧设置 >"}
               </Text>
             </VStack>
             <Button
@@ -737,29 +752,24 @@ function SettingsComponent({
               buttonStyle="bordered"
               controlSize="small"
               action={() =>
-                promptField("设置 AccessKey ID", "请输入阿里云 AccessKey ID (如 LTAI...)", ak, "LTAI5xxxxxxxxxxx", setAk)
+                promptField("设置 AccessKey ID", "请输入阿里云 AccessKey ID (LTAI 开头)", ak, "LTAI5xxxxxxxxxxx", setAk)
               }
             />
           </HStack>
 
+          <Divider padding={{ leading: 56 }} />
+
           {/* AccessKey Secret */}
-          <HStack
-            padding={12}
-            background="rgba(142, 142, 147, 0.12)"
-            cornerRadius={10}
-            alignment="center"
-          >
-            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-              <Text font="caption2" bold foregroundColor="#8E8E93">
+          <HStack padding={{ horizontal: 14, vertical: 12 }} alignment="center" spacing={12}>
+            <ZStack frame={{ width: 30, height: 30 }} background="#FF3B30" cornerRadius={7}>
+              <Image systemName="lock.fill" font={15} foregroundStyle="#FFFFFF" />
+            </ZStack>
+            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold>
                 AccessKey Secret
               </Text>
-              <Text
-                font="subheadline"
-                bold
-                foregroundColor={sk ? "#30D158" : "#0A84FF"}
-                lineLimit={1}
-              >
-                {sk ? "••••••••••••••••••••••••••••" : "轻点右侧按钮输入 >"}
+              <Text font="caption2" foregroundColor={sk ? "#34C759" : "#007AFF"} lineLimit={1}>
+                {sk ? "••••••••••••••••••••••••••••" : "轻点右侧设置 >"}
               </Text>
             </VStack>
             <Button
@@ -771,24 +781,53 @@ function SettingsComponent({
               }
             />
           </HStack>
+        </VStack>
+        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 6, bottom: 12 }}>
+          凭据仅加密存储于您 iPhone 本机的隔离沙盒内，绝不上云或外泄。
+        </Text>
 
-          {/* ECS 所在地域 */}
-          <HStack
-            padding={12}
-            background="rgba(142, 142, 147, 0.12)"
-            cornerRadius={10}
-            alignment="center"
-          >
-            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-              <Text font="caption2" bold foregroundColor="#8E8E93">
-                ECS 所在地域 (Region ID)
+        {/* Section 3: 目标实例与地域 */}
+        <HStack padding={{ leading: 8, bottom: 6 }} alignment="center">
+          <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
+            目标 ECS 实例
+          </Text>
+        </HStack>
+        <VStack background="#FFFFFF" cornerRadius={12} spacing={0}>
+          {/* ECS 实例 ID */}
+          <HStack padding={{ horizontal: 14, vertical: 12 }} alignment="center" spacing={12}>
+            <ZStack frame={{ width: 30, height: 30 }} background="#34C759" cornerRadius={7}>
+              <Image systemName="server.rack" font={15} foregroundStyle="#FFFFFF" />
+            </ZStack>
+            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold>
+                ECS 实例 ID
               </Text>
-              <Text
-                font="subheadline"
-                bold
-                foregroundColor="#FFFFFF"
-                lineLimit={1}
-              >
+              <Text font="caption2" foregroundColor={ecsId ? "#8E8E93" : "#007AFF"} lineLimit={1}>
+                {ecsId ? ecsId : "未设置 (如 i-j6c...)"}
+              </Text>
+            </VStack>
+            <Button
+              title={ecsId ? "修改" : "输入"}
+              buttonStyle="bordered"
+              controlSize="small"
+              action={() =>
+                promptField("设置 ECS 实例 ID", "请输入您要控制的 ECS 实例 ID", ecsId, "i-xxxxxxxxxxxx", setEcsId)
+              }
+            />
+          </HStack>
+
+          <Divider padding={{ leading: 56 }} />
+
+          {/* ECS 地域 */}
+          <HStack padding={{ horizontal: 14, vertical: 12 }} alignment="center" spacing={12}>
+            <ZStack frame={{ width: 30, height: 30 }} background="#5856D6" cornerRadius={7}>
+              <Image systemName="globe.asia.australia.fill" font={15} foregroundStyle="#FFFFFF" />
+            </ZStack>
+            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold>
+                ECS 所在地域
+              </Text>
+              <Text font="caption2" foregroundColor="#8E8E93">
                 {region || "cn-hongkong"}
               </Text>
             </VStack>
@@ -801,49 +840,28 @@ function SettingsComponent({
               }
             />
           </HStack>
+        </VStack>
+        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 6, bottom: 12 }}>
+          确保 Region ID 与 ECS 实例所在的物理地域一致。
+        </Text>
 
-          {/* ECS 实例 ID */}
-          <HStack
-            padding={12}
-            background="rgba(142, 142, 147, 0.12)"
-            cornerRadius={10}
-            alignment="center"
-          >
-            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-              <Text font="caption2" bold foregroundColor="#8E8E93">
-                ECS 实例 ID (i- 开头)
+        {/* Section 4: 流量风控策略 */}
+        <HStack padding={{ leading: 8, bottom: 6 }} alignment="center">
+          <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
+            流量风控策略
+          </Text>
+        </HStack>
+        <VStack background="#FFFFFF" cornerRadius={12} spacing={0}>
+          {/* CDT 警戒阈值 */}
+          <HStack padding={{ horizontal: 14, vertical: 12 }} alignment="center" spacing={12}>
+            <ZStack frame={{ width: 30, height: 30 }} background="#AF52DE" cornerRadius={7}>
+              <Image systemName="speedometer" font={15} foregroundStyle="#FFFFFF" />
+            </ZStack>
+            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold>
+                CDT 流量警戒阈值
               </Text>
-              <Text
-                font="subheadline"
-                bold
-                foregroundColor={ecsId ? "#FFFFFF" : "#0A84FF"}
-                lineLimit={1}
-              >
-                {ecsId ? ecsId : "轻点右侧按钮输入 >"}
-              </Text>
-            </VStack>
-            <Button
-              title={ecsId ? "修改" : "输入"}
-              buttonStyle="bordered"
-              controlSize="small"
-              action={() =>
-                promptField("设置 ECS 实例 ID", "请输入您要控制的 ECS 实例 ID (如 i-j6c...)", ecsId, "i-xxxxxxxxxxxx", setEcsId)
-              }
-            />
-          </HStack>
-
-          {/* CDT 流量警戒阈值 */}
-          <HStack
-            padding={12}
-            background="rgba(142, 142, 147, 0.12)"
-            cornerRadius={10}
-            alignment="center"
-          >
-            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-              <Text font="caption2" bold foregroundColor="#8E8E93">
-                CDT 流量警戒阈值 (GB)
-              </Text>
-              <Text font="subheadline" bold foregroundColor="#FF9F0A">
+              <Text font="caption2" foregroundColor="#FF9500">
                 {threshold || "180"} GB / 月
               </Text>
             </VStack>
@@ -852,42 +870,43 @@ function SettingsComponent({
               buttonStyle="bordered"
               controlSize="small"
               action={() =>
-                promptField("设置 CDT 流量警戒阈值 (GB)", "输入当月出网流量警戒值 (超出后告警或自动关机)", threshold, "180", setThreshold)
+                promptField("设置 CDT 流量警戒阈值 (GB)", "输入当月出网流量警戒值", threshold, "180", setThreshold)
               }
             />
           </HStack>
 
-          {/* 超额自动关机防扣费开关 */}
-          <HStack
-            padding={12}
-            background="rgba(142, 142, 147, 0.12)"
-            cornerRadius={10}
-            alignment="center"
-          >
-            <VStack alignment="leading" spacing={2} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+          <Divider padding={{ leading: 56 }} />
+
+          {/* 自动熔断关机开关 */}
+          <HStack padding={{ horizontal: 14, vertical: 11 }} alignment="center" spacing={12}>
+            <ZStack frame={{ width: 30, height: 30 }} background="#00C7BE" cornerRadius={7}>
+              <Image systemName="shield.lefthalf.filled" font={15} foregroundStyle="#FFFFFF" />
+            </ZStack>
+            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
               <Text font="subheadline" bold>
                 超额自动关机防扣费
               </Text>
               <Text font="caption2" foregroundColor="#8E8E93">
-                当出网流量超过警戒阈值时自动停止 ECS
+                当出网流量达到阈值时自动停止 ECS
               </Text>
             </VStack>
-            <Button
-              title={autoStop ? "🟢 已开启" : "⚪ 已关闭"}
-              buttonStyle="bordered"
-              controlSize="small"
-              action={() => setAutoStop(!autoStop)}
+            <Toggle
+              isOn={autoStop}
+              onToggle={() => setAutoStop(!autoStop)}
             />
           </HStack>
         </VStack>
-
-        <Spacer />
+        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 6, bottom: 20 }}>
+          当月 CDT 出网流量达到警戒线时，小组件与控制台将自动触发关机以防超额产生账单。
+        </Text>
 
         {/* 底部保存按钮 */}
         <Button
-          title="💾 保存配置并进入控制台"
+          title="💾 保存配置并返回控制台"
           buttonStyle="borderedProminent"
           controlSize="large"
+          tint="#007AFF"
+          frame={{ maxWidth: Infinity }}
           action={handleSave}
         />
       </VStack>
@@ -895,7 +914,7 @@ function SettingsComponent({
   )
 }
 
-// ==================== 6. 控制台视图 ====================
+// ==================== 6. 控制台视图 (Apple Native Inset Grouped Style) ====================
 
 function AppDashboard() {
   const [config, setConfig] = useState<AppConfig>(loadSavedConfig())
@@ -943,6 +962,28 @@ function AppDashboard() {
     }
   }
 
+  // 二次确认关机弹窗防误触！
+  const confirmStop = async () => {
+    if (typeof Dialog !== "undefined" && Dialog.actionSheet) {
+      const selectedIndex = await Dialog.actionSheet({
+        title: "⚠️ 确认停止 ECS 实例？",
+        message: `实例 ID: ${config.ecsInstanceId}\n\n停止后服务器将立即断网下线，所有正在运行的网站与服务将暂停访问。确定关机吗？`,
+        cancelButton: true,
+        actions: [
+          {
+            label: "确认停止实例 (关机)",
+            destructive: true
+          }
+        ]
+      })
+      if (selectedIndex === 0) {
+        await handleToggle("stop")
+      }
+    } else {
+      await handleToggle("stop")
+    }
+  }
+
   if (showSettings) {
     return (
       <NavigationStack>
@@ -963,190 +1004,242 @@ function AppDashboard() {
 
   return (
     <NavigationStack>
-      <VStack
-        alignment="leading"
-        spacing={16}
-        padding={16}
-        navigationTitle="阿里云 CDT 智控中心"
-      >
-        <HStack>
-          <Text font="headline" bold>
-            🖥️ 实例控制
-          </Text>
-          <Spacer />
-          <Button
-            title="⚙️ 设置"
-            font="footnote"
-            buttonStyle="bordered"
-            action={() => setShowSettings(true)}
-          />
-        </HStack>
-
-        {errorMsg && (
-          <HStack padding={12} background="rgba(255, 69, 58, 0.12)" cornerRadius={10}>
-            <Text font="footnote" foregroundColor="#FF453A">
-              ⚠️ {errorMsg}
-            </Text>
-          </HStack>
-        )}
-
-        {/* 流量监控卡片 */}
+      <ScrollView background="#F2F2F7">
         <VStack
           alignment="leading"
-          padding={16}
-          background="rgba(142, 142, 147, 0.08)"
-          cornerRadius={14}
-          spacing={12}
+          spacing={0}
+          padding={{ horizontal: 16, vertical: 12 }}
+          navigationTitle="阿里云 CDT 智控台"
+          navigationBarTitleDisplayMode="inline"
         >
-          <HStack>
-            <Text font="headline" bold>
-              📊 CDT 出网流量
+          {/* 顶部标题与设置入口 */}
+          <HStack alignment="center" padding={{ bottom: 12 }}>
+            <HStack spacing={6} alignment="center">
+              <Image systemName="cloud.fill" font={18} foregroundStyle="#007AFF" />
+              <Text font="headline" bold foregroundColor="#000000">
+                阿里云 CDT 智控台
+              </Text>
+            </HStack>
+            <Spacer />
+            <Button
+              action={() => setShowSettings(true)}
+              buttonStyle="plain"
+              frame={{ width: 36, height: 36 }}
+            >
+              <ZStack frame={{ width: 36, height: 36 }} background="rgba(142, 142, 147, 0.18)" cornerRadius={18}>
+                <Image systemName="gearshape.fill" font={16} foregroundStyle="#007AFF" />
+              </ZStack>
+            </Button>
+          </HStack>
+
+          {errorMsg && (
+            <HStack padding={12} background="rgba(255, 59, 48, 0.12)" cornerRadius={10} padding={{ bottom: 12 }}>
+              <Text font="caption1" bold foregroundColor="#FF3B30">
+                ⚠️ {errorMsg}
+              </Text>
+            </HStack>
+          )}
+
+          {/* Section 1: ECS 实例状态 */}
+          <HStack padding={{ leading: 8, bottom: 6, top: 4 }} alignment="center">
+            <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
+              实例运行状态
+            </Text>
+            <Spacer />
+            <Text font={12} foregroundColor="#8E8E93">
+              {config.regionId}
+            </Text>
+          </HStack>
+
+          <VStack background="#FFFFFF" cornerRadius={12} spacing={0}>
+            {/* 实例信息行 */}
+            <HStack padding={{ horizontal: 14, vertical: 12 }} alignment="center" spacing={12}>
+              <ZStack frame={{ width: 30, height: 30 }} background={isRunning ? "#34C759" : "#8E8E93"} cornerRadius={7}>
+                <Image systemName="server.rack" font={15} foregroundStyle="#FFFFFF" />
+              </ZStack>
+              <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                <Text font="subheadline" bold>
+                  ECS 实例
+                </Text>
+                <Text font="caption2" foregroundColor="#8E8E93" lineLimit={1}>
+                  {config.ecsInstanceId}
+                </Text>
+              </VStack>
+              <HStack
+                padding={{ horizontal: 8, vertical: 4 }}
+                background={isRunning ? "rgba(52, 199, 89, 0.15)" : "rgba(142, 142, 147, 0.18)"}
+                cornerRadius={8}
+                spacing={5}
+                alignment="center"
+              >
+                <Circle fill={isRunning ? "#34C759" : "#8E8E93"} frame={{ width: 6, height: 6 }} />
+                <Text font={12} bold foregroundColor={isRunning ? "#34C759" : "#8E8E93"}>
+                  {isRunning ? "运行中" : data?.ecsStatus === "Stopped" ? "已停止" : data?.ecsStatus || "加载中"}
+                </Text>
+              </HStack>
+            </HStack>
+
+            <Divider padding={{ leading: 56 }} />
+
+            {/* IP与地域行 */}
+            <HStack padding={{ horizontal: 14, vertical: 12 }} alignment="center" spacing={12}>
+              <ZStack frame={{ width: 30, height: 30 }} background="#007AFF" cornerRadius={7}>
+                <Image systemName="network" font={15} foregroundStyle="#FFFFFF" />
+              </ZStack>
+              <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                <Text font="subheadline" bold>
+                  公网 IP 地址
+                </Text>
+                <Text font="caption2" foregroundColor={data?.publicIp ? "#007AFF" : "#8E8E93"}>
+                  {data?.publicIp || "未分配公网 IP"}
+                </Text>
+              </VStack>
+              <Text font="caption2" foregroundColor="#8E8E93">
+                {config.regionId}
+              </Text>
+            </HStack>
+
+            <Divider padding={{ leading: 56 }} />
+
+            {/* 开关机控制按钮行 (带二次确认防护) */}
+            <HStack spacing={12} padding={{ horizontal: 14, vertical: 12 }}>
+              <Button
+                title={btnLoading ? "处理中..." : "🛑 停止实例 (关机)"}
+                disabled={!isRunning || btnLoading}
+                buttonStyle="bordered"
+                tint="#FF3B30"
+                controlSize="regular"
+                frame={{ maxWidth: Infinity }}
+                action={confirmStop}
+              />
+              <Button
+                title={btnLoading ? "处理中..." : "▶️ 启动实例 (开机)"}
+                disabled={isRunning || btnLoading}
+                buttonStyle="borderedProminent"
+                tint="#34C759"
+                controlSize="regular"
+                frame={{ maxWidth: Infinity }}
+                action={() => handleToggle("start")}
+              />
+            </HStack>
+          </VStack>
+          <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 6, bottom: 14 }}>
+            为防误触，停止实例需要进行二次弹窗确认后方可执行。
+          </Text>
+
+          {/* Section 2: CDT 流量用量卡片 */}
+          <HStack padding={{ leading: 8, bottom: 6 }} alignment="center">
+            <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
+              CDT 互联网出网流量
             </Text>
             <Spacer />
             {data && (
-              <Text font="footnote" bold foregroundColor={data.color}>
-                {data.percentage}%
+              <Text font={12} bold foregroundColor={data.color}>
+                已用 {data.percentage}%
               </Text>
             )}
           </HStack>
 
-          {data ? (
-            <VStack alignment="leading" spacing={8}>
-              <HStack alignment="bottom" spacing={6}>
-                <Text font="largeTitle" bold foregroundColor={data.color}>
-                  {data.totalGB.toFixed(2)}
+          <VStack background="#FFFFFF" cornerRadius={12} spacing={0}>
+            {/* 流量主数据 */}
+            <HStack padding={{ horizontal: 14, vertical: 12 }} alignment="center" spacing={12}>
+              <ZStack frame={{ width: 30, height: 30 }} background="#AF52DE" cornerRadius={7}>
+                <Image systemName="arrow.up.and.down" font={15} foregroundStyle="#FFFFFF" />
+              </ZStack>
+              <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                <Text font="subheadline" bold>
+                  出网用量 / 阈值
                 </Text>
-                <Text font="subheadline" foregroundColor="#8E8E93" padding={{ bottom: 4 }}>
-                  GB / {data.thresholdGB} GB
+                <Text font="caption2" foregroundColor="#8E8E93">
+                  当月警戒阈值: {config.trafficThresholdGB} GB
                 </Text>
-                <Spacer />
-                <VStack alignment="trailing">
-                  <Text font="caption1" foregroundColor="#8E8E93">
+              </VStack>
+              {data && (
+                <VStack alignment="trailing" spacing={2}>
+                  <Text font={20} bold foregroundColor={data.color}>
+                    {data.totalGB.toFixed(2)} GB
+                  </Text>
+                  <Text font={11} foregroundColor="#8E8E93">
+                    / {data.thresholdGB} GB
+                  </Text>
+                </VStack>
+              )}
+            </HStack>
+
+            {/* 原生进度条 */}
+            {data && (
+              <VStack padding={{ horizontal: 14, bottom: 10 }}>
+                <ProgressView
+                  value={Math.max(0.01, Math.min(1.0, data.percentage / 100))}
+                  tint={data.color as any}
+                  frame={{ height: 6 }}
+                />
+              </VStack>
+            )}
+
+            <Divider padding={{ leading: 14 }} />
+
+            {/* 三列指标卡片 */}
+            {data ? (
+              <HStack padding={{ horizontal: 14, vertical: 10 }} alignment="center">
+                <VStack alignment="center" spacing={2} frame={{ maxWidth: Infinity }}>
+                  <Text font="caption2" foregroundColor="#8E8E93">
                     剩余可用
                   </Text>
-                  <Text font="headline" bold foregroundColor="#0A84FF">
-                    {data.remainingGB.toFixed(2)} GB
+                  <Text font="subheadline" bold foregroundColor="#007AFF">
+                    {data.remainingGB.toFixed(1)} G
+                  </Text>
+                </VStack>
+
+                <Divider frame={{ height: 24 }} />
+
+                <VStack alignment="center" spacing={2} frame={{ maxWidth: Infinity }}>
+                  <Text font="caption2" foregroundColor="#8E8E93">
+                    距结算重置
+                  </Text>
+                  <Text font="subheadline" bold foregroundColor="#007AFF">
+                    {data.daysRemaining} 天
+                  </Text>
+                </VStack>
+
+                <Divider frame={{ height: 24 }} />
+
+                <VStack alignment="center" spacing={2} frame={{ maxWidth: Infinity }}>
+                  <Text font="caption2" foregroundColor="#8E8E93">
+                    建议日均
+                  </Text>
+                  <Text font="subheadline" bold foregroundColor={data.color}>
+                    &lt; {data.dailyBudgetGB} G
                   </Text>
                 </VStack>
               </HStack>
-
-              <ZStack alignment="leading">
-                <HStack
-                  frame={{ height: 8, maxWidth: "infinity" }}
-                  background="rgba(142, 142, 147, 0.2)"
-                  cornerRadius={4}
-                />
-                <HStack
-                  frame={{
-                    height: 8,
-                    width: `${Math.max(2, Math.min(100, data.percentage))}%`
-                  }}
-                  background={data.color}
-                  cornerRadius={4}
-                />
-              </ZStack>
-
-              <HStack padding={{ top: 4 }}>
+            ) : (
+              <HStack padding={14} alignment="center">
                 <Text font="caption2" foregroundColor="#8E8E93">
-                  距结算日: {data.daysRemaining} 天
-                </Text>
-                <Spacer />
-                <Text font="caption2" foregroundColor="#8E8E93">
-                  建议日均: &lt; {data.dailyBudgetGB} GB
-                </Text>
-              </HStack>
-            </VStack>
-          ) : (
-            <Text font="subheadline" foregroundColor="#8E8E93">
-              正在加载阿里云实时数据...
-            </Text>
-          )}
-        </VStack>
-
-        {/* ECS 控制卡片 */}
-        <VStack
-          alignment="leading"
-          padding={16}
-          background="rgba(142, 142, 147, 0.08)"
-          cornerRadius={14}
-          spacing={12}
-        >
-          <HStack>
-            <Text font="headline" bold>
-              🖥️ ECS 运行状态
-            </Text>
-            <Spacer />
-            {data && (
-              <HStack
-                padding={{ top: 3, bottom: 3, leading: 8, trailing: 8 }}
-                background={isRunning ? "rgba(48, 209, 88, 0.15)" : "rgba(255, 69, 58, 0.15)"}
-                cornerRadius={12}
-                spacing={4}
-              >
-                <Text font="caption1">{isRunning ? "🟢" : "🔴"}</Text>
-                <Text
-                  font="caption1"
-                  bold
-                  foregroundColor={isRunning ? "#30D158" : "#FF453A"}
-                >
-                  {isRunning ? "运行中" : "已关机"}
-                </Text>
-              </HStack>
-            )}
-          </HStack>
-
-          <VStack alignment="leading" spacing={4}>
-            <HStack>
-              <Text font="footnote" foregroundColor="#8E8E93">
-                实例 ID:
-              </Text>
-              <Text font="footnote" bold>
-                {config.ecsInstanceId}
-              </Text>
-            </HStack>
-            {data?.publicIp && (
-              <HStack>
-                <Text font="footnote" foregroundColor="#8E8E93">
-                  公网 IP:
-                </Text>
-                <Text font="footnote" bold foregroundColor="#0A84FF">
-                  {data.publicIp}
+                  正在同步阿里云最新用量数据...
                 </Text>
               </HStack>
             )}
           </VStack>
+          <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 6, bottom: 14 }}>
+            🛡️ 自动熔断：当出网流量达到 {config.trafficThresholdGB} GB 时将自动停止 ECS 实例防止产生账单。
+          </Text>
 
-          <Divider />
-
-          <HStack spacing={12}>
+          {/* 刷新操作按钮 */}
+          <HStack padding={{ top: 8, bottom: 16 }} alignment="center">
+            <Spacer />
             <Button
-              title="停止实例 (关机)"
-              disabled={!isRunning || btnLoading}
+              title={loading ? "同步数据中..." : "🔄 刷新控制台数据"}
               buttonStyle="bordered"
-              tint="#FF453A"
-              action={() => handleToggle("stop")}
+              disabled={loading}
+              tint="#007AFF"
+              controlSize="regular"
+              action={() => refresh(config)}
             />
-            <Button
-              title="启动实例 (开机)"
-              disabled={isRunning || btnLoading}
-              buttonStyle="borderedProminent"
-              tint="#30D158"
-              action={() => handleToggle("start")}
-            />
+            <Spacer />
           </HStack>
         </VStack>
-
-        <Spacer />
-
-        <VStack alignment="center" spacing={8}>
-          <Button
-            title={loading ? "刷新中..." : "🔄 刷新数据"}
-            buttonStyle="bordered"
-            disabled={loading}
-            action={() => refresh(config)}
-          />
-        </VStack>
-      </VStack>
+      </ScrollView>
     </NavigationStack>
   )
 }
