@@ -1331,18 +1331,34 @@ function AppDashboard() {
             <Divider padding={{ horizontal: 16 }} />
 
             {/* 开关机控制按钮行 (Apple iOS 26 Liquid Glass Capsules) */}
-            <HStack spacing={16} padding={{ horizontal: 16, vertical: 14 }}>
+            <HStack
+              spacing={12}
+              padding={{ horizontal: 16, vertical: 14 }}
+              frame={{ maxWidth: "infinity", alignment: "center" }}
+            >
               {/* 停止实例按钮：运行中为淡红微光液态玻璃胶囊，停止时为幽灵按钮 */}
               <Button
                 action={confirmStop}
                 disabled={!isRunning || btnLoading}
                 buttonStyle="plain"
-                frame={{ maxWidth: Infinity, height: 44 }}
+                frame={{
+                  minWidth: 132,
+                  maxWidth: "infinity",
+                  minHeight: 44,
+                  idealHeight: 44,
+                  alignment: "center"
+                }}
               >
                 <HStack
                   spacing={7}
                   alignment="center"
-                  frame={{ maxWidth: Infinity, height: 44 }}
+                  frame={{
+                    minWidth: 132,
+                    maxWidth: "infinity",
+                    minHeight: 44,
+                    idealHeight: 44,
+                    alignment: "center"
+                  }}
                   background={isRunning && !btnLoading ? "rgba(255, 59, 48, 0.09)" : "transparent"}
                   border={
                     isRunning && !btnLoading
@@ -1368,6 +1384,8 @@ function AppDashboard() {
                     bold={isRunning && !btnLoading}
                     foregroundColor={isRunning && !btnLoading ? "#FF3B30" : "#C7C7CC"}
                     lineLimit={1}
+                    minScaleFactor={0.78}
+                    allowsTightening={true}
                   >
                     {btnLoading ? "处理中..." : "停止实例"}
                   </Text>
@@ -1379,12 +1397,24 @@ function AppDashboard() {
                 action={() => handleToggle("start")}
                 disabled={isRunning || btnLoading}
                 buttonStyle="plain"
-                frame={{ maxWidth: Infinity, height: 44 }}
+                frame={{
+                  minWidth: 132,
+                  maxWidth: "infinity",
+                  minHeight: 44,
+                  idealHeight: 44,
+                  alignment: "center"
+                }}
               >
                 <HStack
                   spacing={7}
                   alignment="center"
-                  frame={{ maxWidth: Infinity, height: 44 }}
+                  frame={{
+                    minWidth: 132,
+                    maxWidth: "infinity",
+                    minHeight: 44,
+                    idealHeight: 44,
+                    alignment: "center"
+                  }}
                   background={!isRunning && !btnLoading ? "rgba(52, 199, 89, 0.12)" : "transparent"}
                   border={
                     !isRunning && !btnLoading
@@ -1410,6 +1440,8 @@ function AppDashboard() {
                     bold={!isRunning && !btnLoading}
                     foregroundColor={!isRunning && !btnLoading ? "#248A3D" : "#C7C7CC"}
                     lineLimit={1}
+                    minScaleFactor={0.78}
+                    allowsTightening={true}
                   >
                     {btnLoading ? "处理中..." : "启动实例"}
                   </Text>
