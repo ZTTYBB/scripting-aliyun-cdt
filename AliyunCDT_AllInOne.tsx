@@ -335,6 +335,79 @@ async function toggleECS(action: "start" | "stop", config: AppConfig) {
 
 // ==================== 4. 小组件渲染视图 ====================
 
+type ECSStatusMeta = {
+  label: string
+  shortLabel: string
+  color: string
+}
+
+function getECSStatusMeta(status: MonitorData["ecsStatus"]): ECSStatusMeta {
+  switch (status) {
+    case "Running":
+      return { label: "运行中", shortLabel: "运行", color: "#30D158" }
+    case "Starting":
+      return { label: "启动中", shortLabel: "启动中", color: "#FF9F0A" }
+    case "Stopping":
+      return { label: "停止中", shortLabel: "停止中", color: "#FF9F0A" }
+    case "Stopped":
+      return { label: "已停止", shortLabel: "停止", color: "#8E8E93" }
+    default:
+      return { label: "状态未知", shortLabel: "未知", color: "#8E8E93" }
+  }
+}
+
+function TrafficRing({
+  data,
+  size,
+  lineWidth,
+  value,
+  caption,
+  valueFont,
+  captionFont
+}: {
+  data: MonitorData
+  size: number
+  lineWidth: number
+  value: string
+  caption?: string
+  valueFont: number
+  captionFont?: number
+}) {
+  const progress = Math.max(0, Math.min(1, data.percentage / 100))
+
+  return (
+    <ZStack frame={{ width: size, height: size }} alignment="center">
+      <Circle
+        stroke={{
+          shapeStyle: "rgba(142, 142, 147, 0.16)",
+          strokeStyle: { lineWidth, lineCap: "round" }
+        }}
+        frame={{ width: size, height: size }}
+      />
+      <Circle
+        trim={{ from: 0, to: progress }}
+        stroke={{
+          shapeStyle: data.color,
+          strokeStyle: { lineWidth, lineCap: "round" }
+        }}
+        rotationEffect={-90}
+        widgetAccentable
+        frame={{ width: size, height: size }}
+      />
+      <VStack spacing={0} alignment="center">
+        <Text font={valueFont} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+          {value}
+        </Text>
+        {caption && (
+          <Text font={captionFont || 9} lineLimit={1} foregroundColor="#8E8E93">
+            {caption}
+          </Text>
+        )}
+      </VStack>
+    </ZStack>
+  )
+}
+
 function NotConfiguredWidget() {
   return (
     <VStack
@@ -362,66 +435,52 @@ function NotConfiguredWidget() {
 }
 
 function SmallWidget({ data }: { data: MonitorData }) {
-  const isRunning = data.ecsStatus === "Running"
+  const status = getECSStatusMeta(data.ecsStatus)
 
   return (
     <VStack
       alignment="leading"
       spacing={6}
-      padding={{ horizontal: 14, vertical: 12 }}
+      padding={{ horizontal: 12, vertical: 11 }}
       widgetBackground="systemBackground"
       frame={{ maxWidth: Infinity, maxHeight: Infinity }}
     >
-      {/* 顶部标题与状态 */}
       <HStack alignment="center">
         <HStack spacing={4} alignment="center">
           <Image systemName="cloud.fill" font={12} foregroundStyle="systemBlue" />
-          <Text font="caption2" bold foregroundColor="#8E8E93">
-            CDT 流量
+          <Text font="caption2" bold lineLimit={1} foregroundStyle="label">
+            CDT
           </Text>
         </HStack>
         <Spacer />
         <HStack spacing={4} alignment="center">
-          <Circle fill={isRunning ? "#30D158" : "#8E8E93"} frame={{ width: 6, height: 6 }} />
-          <Text font="caption2" bold foregroundColor={isRunning ? "#30D158" : "#8E8E93"}>
-            {isRunning ? "运行中" : "已关机"}
+          <Circle widgetAccentable fill={status.color} frame={{ width: 6, height: 6 }} />
+          <Text font="caption2" bold lineLimit={1} foregroundColor={status.color}>
+            {status.shortLabel}
           </Text>
         </HStack>
       </HStack>
 
-      <Spacer />
+      <HStack frame={{ maxWidth: Infinity }} alignment="center">
+        <Spacer />
+        <TrafficRing
+          data={data}
+          size={84}
+          lineWidth={7}
+          value={data.totalGB.toFixed(1)}
+          caption={`/ ${data.thresholdGB} GB`}
+          valueFont={20}
+          captionFont={9}
+        />
+        <Spacer />
+      </HStack>
 
-      {/* 核心用量数据 */}
-      <VStack alignment="leading" spacing={2}>
-        <HStack alignment="bottom" spacing={2}>
-          <Text font={24} bold foregroundColor={data.color}>
-            {data.totalGB.toFixed(1)}
-          </Text>
-          <Text font="caption2" foregroundColor="#8E8E93" padding={{ bottom: 2 }}>
-            / {data.thresholdGB}G
-          </Text>
-        </HStack>
-        <Text font="caption2" foregroundColor="#8E8E93">
-          已用 {data.percentage}% · 剩 {data.remainingGB.toFixed(1)}G
-        </Text>
-      </VStack>
-
-      {/* 原生线性进度条 */}
-      <ProgressView
-        value={Math.max(0.01, Math.min(1.0, data.percentage / 100))}
-        tint={data.color as any}
-        frame={{ height: 5 }}
-      />
-
-      <Spacer />
-
-      {/* 底部重置倒计时 */}
       <HStack alignment="center">
-        <Text font="caption2" foregroundColor="#8E8E93">
-          距重置:
+        <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
+          剩余 {data.remainingGB.toFixed(1)} GB
         </Text>
         <Spacer />
-        <Text font="caption2" bold foregroundColor="#0A84FF">
+        <Text font={10} bold monospacedDigit lineLimit={1} foregroundStyle="label">
           {data.daysRemaining} 天
         </Text>
       </HStack>
@@ -430,7 +489,7 @@ function SmallWidget({ data }: { data: MonitorData }) {
 }
 
 function MediumWidget({ data }: { data: MonitorData }) {
-  const isRunning = data.ecsStatus === "Running"
+  const status = getECSStatusMeta(data.ecsStatus)
 
   return (
     <VStack
@@ -440,79 +499,117 @@ function MediumWidget({ data }: { data: MonitorData }) {
       widgetBackground="systemBackground"
       frame={{ maxWidth: Infinity, maxHeight: Infinity }}
     >
-      {/* 顶部标题与 ECS 状态指示 */}
       <HStack alignment="center">
         <HStack spacing={6} alignment="center">
           <Image systemName="cloud.fill" font={14} foregroundStyle="systemBlue" />
-          <Text font="headline" bold foregroundStyle="label">
-            阿里云 CDT 监控
+          <Text font="subheadline" bold lineLimit={1} foregroundStyle="label">
+            阿里云 CDT
           </Text>
         </HStack>
         <Spacer />
-        <HStack
-          padding={{ top: 3, bottom: 3, leading: 8, trailing: 8 }}
-          background="rgba(142, 142, 147, 0.15)"
-          cornerRadius={12}
-          spacing={5}
-          alignment="center"
-        >
-          <Circle fill={isRunning ? "#30D158" : "#8E8E93"} frame={{ width: 7, height: 7 }} />
-          <Text font={11} bold foregroundColor={isRunning ? "#30D158" : "#8E8E93"}>
-            ECS {isRunning ? "运行中" : "已关机"}
+        <HStack spacing={5} alignment="center">
+          <Circle widgetAccentable fill={status.color} frame={{ width: 7, height: 7 }} />
+          <Text font={10} bold lineLimit={1} foregroundColor={status.color}>
+            ECS {status.label}
           </Text>
         </HStack>
       </HStack>
 
-      {/* 核心用量指标与百分比 */}
-      <HStack alignment="bottom" spacing={6}>
-        <Text font={28} bold foregroundColor={data.color}>
-          {data.totalGB.toFixed(1)}
-        </Text>
-        <Text font="footnote" foregroundColor="#8E8E93" padding={{ bottom: 3 }}>
-          GB / {data.thresholdGB} GB
-        </Text>
-        <Spacer />
-        <VStack alignment="trailing" spacing={2}>
-          <Text font="footnote" bold foregroundColor={data.color}>
-            已使用 {data.percentage}%
-          </Text>
-          <Text font="caption2" foregroundColor="#8E8E93">
-            剩余可用: {data.remainingGB.toFixed(1)} GB
-          </Text>
+      <HStack spacing={14} alignment="center" frame={{ maxWidth: Infinity, maxHeight: Infinity }}>
+        <TrafficRing
+          data={data}
+          size={92}
+          lineWidth={8}
+          value={data.totalGB.toFixed(1)}
+          caption="GB 已用"
+          valueFont={20}
+          captionFont={9}
+        />
+
+        <VStack alignment="leading" spacing={7} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+          <VStack alignment="leading" spacing={1}>
+            <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
+              本月剩余可用
+            </Text>
+            <HStack alignment="bottom" spacing={3}>
+              <Text font={22} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+                {data.remainingGB.toFixed(1)}
+              </Text>
+              <Text font={10} lineLimit={1} foregroundColor="#8E8E93" padding={{ bottom: 2 }}>
+                GB
+              </Text>
+            </HStack>
+          </VStack>
+
+          <HStack spacing={12} frame={{ maxWidth: Infinity }} alignment="top">
+            <VStack alignment="leading" spacing={2}>
+              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
+                距结算
+              </Text>
+              <Text font={11} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+                {data.daysRemaining} 天
+              </Text>
+            </VStack>
+            <VStack alignment="leading" spacing={2}>
+              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
+                建议日均
+              </Text>
+              <Text font={11} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+                &lt; {data.dailyBudgetGB} GB
+              </Text>
+            </VStack>
+          </HStack>
         </VStack>
       </HStack>
-
-      {/* 原生线性进度条 */}
-      <ProgressView
-        value={Math.max(0.01, Math.min(1.0, data.percentage / 100))}
-        tint={data.color as any}
-        frame={{ height: 6 }}
-      />
-
-      <Spacer />
-
-      {/* 底部详细信息栏 */}
-      <HStack alignment="center" spacing={4}>
-        <Text font="caption2" foregroundColor="#8E8E93">
-          距结算重置:
-        </Text>
-        <Text font="caption2" bold foregroundColor="#0A84FF">
-          {data.daysRemaining} 天
-        </Text>
-        <Text font="caption2" foregroundColor="#8E8E93">
-          · 建议日均:
-        </Text>
-        <Text font="caption2" bold foregroundColor={data.color}>
-          &lt; {data.dailyBudgetGB}G
-        </Text>
-        <Spacer />
-        {data.publicIp && (
-          <Text font="caption2" foregroundColor="#8E8E93">
-            IP: {data.publicIp}
-          </Text>
-        )}
-      </HStack>
     </VStack>
+  )
+}
+
+function AccessoryRectangularWidget({ data }: { data: MonitorData }) {
+  const status = getECSStatusMeta(data.ecsStatus)
+
+  return (
+    <HStack
+      alignment="center"
+      spacing={9}
+      widgetBackground="clear"
+      frame={{ maxWidth: Infinity, maxHeight: Infinity, alignment: "leading" }}
+    >
+      <TrafficRing
+        data={data}
+        size={46}
+        lineWidth={5}
+        value={`${data.percentage.toFixed(1)}%`}
+        valueFont={10}
+      />
+      <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+        <HStack alignment="center">
+          <Text font={14} bold monospacedDigit lineLimit={1}>
+            {data.totalGB.toFixed(1)} GB
+          </Text>
+          <Spacer />
+          <HStack spacing={4} alignment="center">
+            <Circle widgetAccentable fill={status.color} frame={{ width: 5, height: 5 }} />
+            <Text font={9} bold lineLimit={1} foregroundColor={status.color}>
+              {status.shortLabel}
+            </Text>
+          </HStack>
+        </HStack>
+        <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
+          剩余 {data.remainingGB.toFixed(1)} GB · {data.daysRemaining} 天重置
+        </Text>
+      </VStack>
+    </HStack>
+  )
+}
+
+function AccessoryInlineWidget({ data }: { data: MonitorData }) {
+  const status = getECSStatusMeta(data.ecsStatus)
+
+  return (
+    <Text lineLimit={1} monospacedDigit>
+      CDT {data.totalGB.toFixed(1)}/{data.thresholdGB}G · {status.shortLabel}
+    </Text>
   )
 }
 
@@ -1648,7 +1745,11 @@ async function main() {
         return
       }
       const data = await fetchMonitorData(config)
-      if (Widget.family === "systemMedium" || Widget.family === "systemLarge") {
+      if (Widget.family === "accessoryInline") {
+        Widget.present(<AccessoryInlineWidget data={data} />)
+      } else if (Widget.family === "accessoryRectangular") {
+        Widget.present(<AccessoryRectangularWidget data={data} />)
+      } else if (Widget.family === "systemMedium" || Widget.family === "systemLarge") {
         Widget.present(<MediumWidget data={data} />)
       } else {
         Widget.present(<SmallWidget data={data} />)
