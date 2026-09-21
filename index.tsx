@@ -346,7 +346,7 @@ declare const UIGlass: {
 
 /**
  * 液态玻璃控件专用 GlassEffect 注入
- * 严格遵循 Liquid Glass 分层法则：仅浮动控件应用液态玻璃材质，内容卡片保持纯白不透明
+ * 严格遵循 HIG 分层法则：仅功能操作控件（按钮、胶囊、开关）应用液态玻璃材质，内容卡片保持纯白不透明
  */
 function liquidGlass(interactive: boolean = true) {
   try {
@@ -499,51 +499,58 @@ function SettingsView({
   }
 
   return (
-    <ScrollView background="#F2F2F7">
+    <ScrollView background="#F2F2F7" showsIndicators={false}>
       <VStack
         alignment="leading"
-        spacing={14}
-        padding={{ horizontal: 16, top: 10, bottom: 32 }}
-        navigationTitle="参数配置"
-        navigationBarTitleDisplayMode="inline"
+        spacing={16}
+        padding={{ horizontal: 16, top: 12, bottom: 40 }}
       >
-        <Toolbar>
+        {/* 顶部导航标题栏 */}
+        <HStack alignment="center" padding={{ horizontal: 4, bottom: 4 }}>
           {isConfigReady(currentConfig) ? (
-            <ToolbarItem placement="topBarLeading">
-              <Button action={onCancel} buttonStyle="plain">
-                <ZStack
-                  frame={{ width: 34, height: 34 }}
-                  background="rgba(142, 142, 147, 0.16)"
-                  border={{ style: "rgba(255, 255, 255, 0.5)", width: 1 }}
-                  clipShape={{ type: "capsule" }}
-                  {...liquidGlass(true)}
-                >
-                  <Image systemName="chevron.backward" font={15} fontWeight="bold" foregroundStyle="#007AFF" />
-                </ZStack>
-              </Button>
-            </ToolbarItem>
-          ) : null}
-          <ToolbarItem placement="topBarTrailing">
-            <Button action={handleSave} buttonStyle="plain">
+            <Button action={onCancel} buttonStyle="plain">
               <HStack
+                spacing={5}
                 padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.12)"
-                border={{ style: "rgba(0, 122, 255, 0.30)", width: 1 }}
+                background="rgba(142, 142, 147, 0.12)"
+                border={{ style: "rgba(142, 142, 147, 0.20)", width: 0.75 }}
                 clipShape={{ type: "capsule" }}
+                alignment="center"
                 {...liquidGlass(true)}
               >
-                <Text font="subheadline" bold foregroundColor="#007AFF">保存</Text>
+                <Image systemName="chevron.backward" font={13} fontWeight="bold" foregroundStyle="#007AFF" />
+                <Text font="caption1" bold foregroundColor="#007AFF">返回</Text>
               </HStack>
             </Button>
-          </ToolbarItem>
-        </Toolbar>
+          ) : (
+            <Spacer frame={{ width: 60 }} />
+          )}
+          <Spacer />
+          <Text font="headline" bold foregroundColor="#1C1C1E">
+            参数配置
+          </Text>
+          <Spacer />
+          <Button action={handleSave} buttonStyle="plain">
+            <HStack
+              spacing={4}
+              padding={{ horizontal: 14, vertical: 6 }}
+              background="rgba(0, 122, 255, 0.12)"
+              border={{ style: "rgba(0, 122, 255, 0.28)", width: 0.75 }}
+              clipShape={{ type: "capsule" }}
+              alignment="center"
+              {...liquidGlass(true)}
+            >
+              <Text font="caption1" bold foregroundColor="#007AFF">保存</Text>
+            </HStack>
+          </Button>
+        </HStack>
 
         {/* 提示横幅 */}
         {errorNotice && (
           <HStack
             padding={{ horizontal: 16, vertical: 12 }}
             background="rgba(255, 59, 48, 0.10)"
-            border={{ style: "rgba(255, 59, 48, 0.25)", width: 1 }}
+            border={{ style: "rgba(255, 59, 48, 0.25)", width: 0.75 }}
             clipShape={{ type: "rect", cornerRadius: 16, style: "continuous" }}
           >
             <Text font="caption1" bold foregroundColor="#FF3B30">
@@ -555,17 +562,17 @@ function SettingsView({
           <HStack
             padding={{ horizontal: 16, vertical: 12 }}
             background="rgba(52, 199, 89, 0.10)"
-            border={{ style: "rgba(52, 199, 89, 0.25)", width: 1 }}
+            border={{ style: "rgba(52, 199, 89, 0.25)", width: 0.75 }}
             clipShape={{ type: "rect", cornerRadius: 16, style: "continuous" }}
           >
-            <Text font="caption1" bold foregroundColor="#34C759">
+            <Text font="caption1" bold foregroundColor="#248A3D">
               {successNotice}
             </Text>
           </HStack>
         )}
 
         {/* Section 1: 快捷导入 */}
-        <HStack padding={{ leading: 8, bottom: 2, top: 2 }} alignment="center">
+        <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
           <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
             快捷导入
           </Text>
@@ -573,20 +580,19 @@ function SettingsView({
         <VStack
           background="#FFFFFF"
           clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-          border={{ style: "rgba(0, 0, 0, 0.05)", width: 0.5 }}
-          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 14, x: 0, y: 4 }}
+          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
           spacing={0}
         >
           <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
-              background="rgba(0, 122, 255, 0.14)"
-              clipShape={{ type: "rect", cornerRadius: 10, style: "continuous" }}
+              background="rgba(0, 122, 255, 0.10)"
+              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
             >
-              <Image systemName="doc.on.clipboard.fill" font={16} foregroundStyle="#007AFF" />
+              <Image systemName="doc.on.clipboard" font={16} foregroundStyle="#007AFF" />
             </ZStack>
-            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundColor="#000000">
+            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold foregroundColor="#1C1C1E">
                 智能剪贴板识别
               </Text>
               <Text font="caption2" foregroundColor="#8E8E93">
@@ -596,8 +602,8 @@ function SettingsView({
             <Button action={handleSmartPaste} buttonStyle="plain">
               <HStack
                 padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.12)"
-                border={{ style: "rgba(0, 122, 255, 0.30)", width: 1 }}
+                background="rgba(0, 122, 255, 0.10)"
+                border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
                 clipShape={{ type: "capsule" }}
                 spacing={5}
                 alignment="center"
@@ -609,12 +615,12 @@ function SettingsView({
             </Button>
           </HStack>
         </VStack>
-        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 2, bottom: 6 }}>
+        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 8, bottom: 4 }}>
           复制包含阿里云凭据的文本后轻点此处，自动提取填入下方所有字段。
         </Text>
 
         {/* Section 2: 访问凭据 */}
-        <HStack padding={{ leading: 8, bottom: 2, top: 4 }} alignment="center">
+        <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
           <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
             阿里云访问凭据
           </Text>
@@ -622,21 +628,20 @@ function SettingsView({
         <VStack
           background="#FFFFFF"
           clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-          border={{ style: "rgba(0, 0, 0, 0.05)", width: 0.5 }}
-          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 14, x: 0, y: 4 }}
+          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
           spacing={0}
         >
           {/* AccessKey ID */}
           <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
-              background="rgba(255, 149, 0, 0.15)"
-              clipShape={{ type: "rect", cornerRadius: 10, style: "continuous" }}
+              background="rgba(255, 149, 0, 0.10)"
+              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
             >
-              <Image systemName="key.fill" font={16} foregroundStyle="#FF9500" />
+              <Image systemName="key" font={16} foregroundStyle="#FF9500" />
             </ZStack>
-            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundColor="#000000">
+            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold foregroundColor="#1C1C1E">
                 AccessKey ID
               </Text>
               <Text font="caption2" foregroundColor={ak ? "#8E8E93" : "#007AFF"} lineLimit={1}>
@@ -652,7 +657,7 @@ function SettingsView({
               <HStack
                 padding={{ horizontal: 12, vertical: 6 }}
                 background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.25)", width: 1 }}
+                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
                 clipShape={{ type: "capsule" }}
                 {...liquidGlass(true)}
               >
@@ -669,16 +674,16 @@ function SettingsView({
           <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
-              background="rgba(255, 59, 48, 0.14)"
-              clipShape={{ type: "rect", cornerRadius: 10, style: "continuous" }}
+              background="rgba(255, 59, 48, 0.10)"
+              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
             >
-              <Image systemName="lock.fill" font={16} foregroundStyle="#FF3B30" />
+              <Image systemName="lock" font={16} foregroundStyle="#FF3B30" />
             </ZStack>
-            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundColor="#000000">
+            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold foregroundColor="#1C1C1E">
                 AccessKey Secret
               </Text>
-              <Text font="caption2" foregroundColor={sk ? "#34C759" : "#007AFF"} lineLimit={1}>
+              <Text font="caption2" foregroundColor={sk ? "#248A3D" : "#007AFF"} lineLimit={1}>
                 {sk ? "••••••••••••••••••••••••••••" : "轻点右侧设置 >"}
               </Text>
             </VStack>
@@ -691,7 +696,7 @@ function SettingsView({
               <HStack
                 padding={{ horizontal: 12, vertical: 6 }}
                 background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.25)", width: 1 }}
+                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
                 clipShape={{ type: "capsule" }}
                 {...liquidGlass(true)}
               >
@@ -702,12 +707,12 @@ function SettingsView({
             </Button>
           </HStack>
         </VStack>
-        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 2, bottom: 6 }}>
+        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 8, bottom: 4 }}>
           凭据仅加密存储于您 iPhone 本机的隔离沙盒内，绝不上云或外泄。
         </Text>
 
         {/* Section 3: 目标实例与地域 */}
-        <HStack padding={{ leading: 8, bottom: 2, top: 4 }} alignment="center">
+        <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
           <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
             目标 ECS 实例
           </Text>
@@ -715,21 +720,20 @@ function SettingsView({
         <VStack
           background="#FFFFFF"
           clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-          border={{ style: "rgba(0, 0, 0, 0.05)", width: 0.5 }}
-          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 14, x: 0, y: 4 }}
+          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
           spacing={0}
         >
           {/* ECS 实例 ID */}
           <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
-              background="rgba(52, 199, 89, 0.14)"
-              clipShape={{ type: "rect", cornerRadius: 10, style: "continuous" }}
+              background="rgba(52, 199, 89, 0.10)"
+              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
             >
               <Image systemName="server.rack" font={16} foregroundStyle="#34C759" />
             </ZStack>
-            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundColor="#000000">
+            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold foregroundColor="#1C1C1E">
                 ECS 实例 ID
               </Text>
               <Text font="caption2" foregroundColor={ecsId ? "#8E8E93" : "#007AFF"} lineLimit={1}>
@@ -745,7 +749,7 @@ function SettingsView({
               <HStack
                 padding={{ horizontal: 12, vertical: 6 }}
                 background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.25)", width: 1 }}
+                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
                 clipShape={{ type: "capsule" }}
                 {...liquidGlass(true)}
               >
@@ -762,13 +766,13 @@ function SettingsView({
           <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
-              background="rgba(88, 86, 214, 0.14)"
-              clipShape={{ type: "rect", cornerRadius: 10, style: "continuous" }}
+              background="rgba(88, 86, 214, 0.10)"
+              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
             >
-              <Image systemName="globe.asia.australia.fill" font={16} foregroundStyle="#5856D6" />
+              <Image systemName="globe.asia.australia" font={16} foregroundStyle="#5856D6" />
             </ZStack>
-            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundColor="#000000">
+            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold foregroundColor="#1C1C1E">
                 ECS 所在地域
               </Text>
               <Text font="caption2" foregroundColor="#8E8E93">
@@ -784,7 +788,7 @@ function SettingsView({
               <HStack
                 padding={{ horizontal: 12, vertical: 6 }}
                 background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.25)", width: 1 }}
+                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
                 clipShape={{ type: "capsule" }}
                 {...liquidGlass(true)}
               >
@@ -795,12 +799,12 @@ function SettingsView({
             </Button>
           </HStack>
         </VStack>
-        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 2, bottom: 6 }}>
+        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 8, bottom: 4 }}>
           确保 Region ID 与 ECS 实例所在的物理地域一致。
         </Text>
 
         {/* Section 4: 流量风控策略 */}
-        <HStack padding={{ leading: 8, bottom: 2, top: 4 }} alignment="center">
+        <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
           <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
             流量风控策略
           </Text>
@@ -808,21 +812,20 @@ function SettingsView({
         <VStack
           background="#FFFFFF"
           clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-          border={{ style: "rgba(0, 0, 0, 0.05)", width: 0.5 }}
-          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 14, x: 0, y: 4 }}
+          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
           spacing={0}
         >
           {/* CDT 警戒阈值 */}
           <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
-              background="rgba(175, 82, 222, 0.15)"
-              clipShape={{ type: "rect", cornerRadius: 10, style: "continuous" }}
+              background="rgba(175, 82, 222, 0.10)"
+              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
             >
               <Image systemName="speedometer" font={16} foregroundStyle="#AF52DE" />
             </ZStack>
-            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundColor="#000000">
+            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold foregroundColor="#1C1C1E">
                 CDT 流量警戒阈值
               </Text>
               <Text font="caption2" foregroundColor="#FF9500">
@@ -838,7 +841,7 @@ function SettingsView({
               <HStack
                 padding={{ horizontal: 12, vertical: 6 }}
                 background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.25)", width: 1 }}
+                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
                 clipShape={{ type: "capsule" }}
                 {...liquidGlass(true)}
               >
@@ -855,13 +858,13 @@ function SettingsView({
           <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
-              background="rgba(0, 199, 190, 0.15)"
-              clipShape={{ type: "rect", cornerRadius: 10, style: "continuous" }}
+              background="rgba(0, 199, 190, 0.10)"
+              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
             >
               <Image systemName="shield.lefthalf.filled" font={16} foregroundStyle="#00C7BE" />
             </ZStack>
-            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundColor="#000000">
+            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              <Text font="subheadline" bold foregroundColor="#1C1C1E">
                 超额自动关机防扣费
               </Text>
               <Text font="caption2" foregroundColor="#8E8E93">
@@ -874,7 +877,7 @@ function SettingsView({
             />
           </HStack>
         </VStack>
-        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 2, bottom: 20 }}>
+        <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 8, bottom: 16 }}>
           当月 CDT 出网流量达到警戒线时，小组件与控制台将自动触发关机以防超额产生账单。
         </Text>
 
@@ -887,14 +890,14 @@ function SettingsView({
           <HStack
             frame={{ maxWidth: Infinity, height: 50 }}
             background="#007AFF"
-            border={{ style: "rgba(255, 255, 255, 0.4)", width: 1 }}
+            border={{ style: "rgba(255, 255, 255, 0.35)", width: 1 }}
             clipShape={{ type: "capsule" }}
-            shadow={{ color: "rgba(0, 122, 255, 0.35)", radius: 12, x: 0, y: 4 }}
+            shadow={{ color: "rgba(0, 122, 255, 0.32)", radius: 10, x: 0, y: 3 }}
             alignment="center"
             spacing={8}
             {...liquidGlass(true)}
           >
-            <Image systemName="checkmark.circle.fill" font={18} foregroundStyle="#FFFFFF" />
+            <Image systemName="checkmark.circle.fill" font={17} foregroundStyle="#FFFFFF" />
             <Text font="headline" bold foregroundColor="#FFFFFF">
               保存配置并返回控制台
             </Text>
@@ -918,7 +921,7 @@ function ConsoleView() {
 
   const appendLog = (msg: string) => {
     const time = new Date().toLocaleTimeString()
-    setLogs(prev => [`[${time}] ${msg}`, ...prev.slice(0, 5)])
+    setLogs(prev => [`[${time}] ${msg}`, ...prev.slice(0, 8)])
   }
 
   const loadData = useCallback(
@@ -974,9 +977,7 @@ function ConsoleView() {
     if (typeof Dialog !== "undefined" && Dialog.actionSheet) {
       const selectedIndex = await Dialog.actionSheet({
         title: "⚠️ 确认停止 ECS 实例？",
-        message: `实例 ID: ${config.ecsInstanceId}
-
-停止后服务器将立即断网下线，所有正在运行的网站与服务将暂停访问。确定关机吗？`,
+        message: `实例 ID: ${config.ecsInstanceId}\n\n停止后服务器将立即断网下线，所有正在运行的网站与服务将暂停访问。确定关机吗？`,
         cancelButton: true,
         actions: [
           {
@@ -1017,40 +1018,52 @@ function ConsoleView() {
   // 2. 主控制台展示 (Apple iOS 26 Liquid Glass Architecture)
   return (
     <NavigationStack>
-      <ScrollView background="#F2F2F7">
+      <ScrollView background="#F2F2F7" showsIndicators={false}>
         <VStack
           alignment="leading"
-          spacing={14}
-          padding={{ horizontal: 16, top: 10, bottom: 32 }}
-          navigationTitle="阿里云 CDT 智控台"
-          navigationBarTitleDisplayMode="inline"
+          spacing={16}
+          padding={{ horizontal: 16, top: 12, bottom: 40 }}
         >
-          <Toolbar>
-            <ToolbarItem placement="topBarTrailing">
-              <Button
-                action={() => setShowSettings(true)}
-                buttonStyle="plain"
-                accessibilityLabel="设置"
+          {/* 顶部标题与设置入口 */}
+          <HStack alignment="center" padding={{ horizontal: 4, bottom: 2 }}>
+            <HStack spacing={8} alignment="center">
+              <ZStack
+                frame={{ width: 32, height: 32 }}
+                background="rgba(0, 122, 255, 0.10)"
+                clipShape={{ type: "capsule" }}
               >
-                <ZStack
-                  frame={{ width: 34, height: 34 }}
-                  background="rgba(142, 142, 147, 0.16)"
-                  border={{ style: "rgba(255, 255, 255, 0.5)", width: 1 }}
-                  clipShape={{ type: "capsule" }}
-                  shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 6, x: 0, y: 2 }}
-                  {...liquidGlass(true)}
-                >
-                  <Image systemName="gearshape.fill" font={15} foregroundStyle="#007AFF" />
-                </ZStack>
-              </Button>
-            </ToolbarItem>
-          </Toolbar>
+                <Image systemName="cloud.fill" font={16} foregroundStyle="#007AFF" />
+              </ZStack>
+              <Text font="title3" bold foregroundColor="#1C1C1E">
+                阿里云 CDT 智控台
+              </Text>
+            </HStack>
+            <Spacer />
+            <Button
+              action={() => setShowSettings(true)}
+              buttonStyle="plain"
+              accessibilityLabel="设置"
+            >
+              <HStack
+                spacing={5}
+                padding={{ horizontal: 12, vertical: 6 }}
+                background="rgba(0, 122, 255, 0.10)"
+                border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
+                clipShape={{ type: "capsule" }}
+                alignment="center"
+                {...liquidGlass(true)}
+              >
+                <Image systemName="gearshape.fill" font={13} foregroundStyle="#007AFF" />
+                <Text font="caption1" bold foregroundColor="#007AFF">设置</Text>
+              </HStack>
+            </Button>
+          </HStack>
 
           {errorMessage && (
             <HStack
               padding={{ horizontal: 16, vertical: 12 }}
               background="rgba(255, 59, 48, 0.10)"
-              border={{ style: "rgba(255, 59, 48, 0.25)", width: 1 }}
+              border={{ style: "rgba(255, 59, 48, 0.25)", width: 0.75 }}
               clipShape={{ type: "rect", cornerRadius: 16, style: "continuous" }}
             >
               <Text font="caption1" bold foregroundColor="#FF3B30">
@@ -1060,7 +1073,7 @@ function ConsoleView() {
           )}
 
           {/* Section 1: ECS 实例状态 */}
-          <HStack padding={{ leading: 8, bottom: 2, top: 2 }} alignment="center">
+          <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
             <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
               实例运行状态
             </Text>
@@ -1070,47 +1083,47 @@ function ConsoleView() {
             </Text>
           </HStack>
 
-          {/* 内容容器：纯白不透明（分层法则，卡片严禁玻璃叠玻璃） */}
+          {/* 内容容器：纯白不透明（HIG 分层法则，卡片严禁玻璃叠玻璃） */}
           <VStack
             background="#FFFFFF"
             clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-            border={{ style: "rgba(0, 0, 0, 0.05)", width: 0.5 }}
-            shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 14, x: 0, y: 4 }}
+            shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
             spacing={0}
           >
             {/* 实例信息行 */}
             <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
               <ZStack
                 frame={{ width: 36, height: 36 }}
-                background={isRunning ? "rgba(52, 199, 89, 0.14)" : "rgba(142, 142, 147, 0.14)"}
-                clipShape={{ type: "rect", cornerRadius: 10, style: "continuous" }}
+                background="rgba(52, 199, 89, 0.10)"
+                clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
               >
                 <Image
                   systemName="server.rack"
                   font={16}
-                  foregroundStyle={isRunning ? "#34C759" : "#8E8E93"}
+                  foregroundStyle="#34C759"
                 />
               </ZStack>
-              <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                <Text font="subheadline" bold foregroundColor="#000000">
+              <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                <Text font="subheadline" bold foregroundColor="#1C1C1E">
                   ECS 云服务器
                 </Text>
                 <Text font="caption2" foregroundColor="#8E8E93" lineLimit={1}>
                   {config.ecsInstanceId}
                 </Text>
               </VStack>
-              {/* 运行状态胶囊 (Liquid Glass Capsule Badge) */}
+              {/* 运行状态胶囊 (呼吸微光发光圆点 + 淡绿背景深绿字) */}
               <HStack
                 padding={{ horizontal: 10, vertical: 5 }}
-                background={isRunning ? "rgba(52, 199, 89, 0.12)" : "rgba(142, 142, 147, 0.14)"}
-                border={{ style: isRunning ? "rgba(52, 199, 89, 0.30)" : "rgba(142, 142, 147, 0.25)", width: 1 }}
+                background={isRunning ? "rgba(52, 199, 89, 0.10)" : "rgba(142, 142, 147, 0.12)"}
                 clipShape={{ type: "capsule" }}
-                spacing={5}
+                spacing={6}
                 alignment="center"
-                {...liquidGlass(false)}
               >
-                <Circle fill={isRunning ? "#34C759" : "#8E8E93"} frame={{ width: 6, height: 6 }} />
-                <Text font={12} bold foregroundColor={isRunning ? "#34C759" : "#8E8E93"}>
+                <ZStack frame={{ width: 12, height: 12 }} alignment="center">
+                  <Circle fill={isRunning ? "rgba(52, 199, 89, 0.28)" : "rgba(142, 142, 147, 0.25)"} frame={{ width: 12, height: 12 }} />
+                  <Circle fill={isRunning ? "#34C759" : "#8E8E93"} frame={{ width: 6, height: 6 }} />
+                </ZStack>
+                <Text font={12} bold foregroundColor={isRunning ? "#248A3D" : "#636366"}>
                   {isRunning ? "运行中" : data?.ecsStatus === "Stopped" ? "已停止" : data?.ecsStatus || "加载中"}
                 </Text>
               </HStack>
@@ -1122,13 +1135,13 @@ function ConsoleView() {
             <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
               <ZStack
                 frame={{ width: 36, height: 36 }}
-                background="rgba(0, 122, 255, 0.14)"
-                clipShape={{ type: "rect", cornerRadius: 10, style: "continuous" }}
+                background="rgba(0, 122, 255, 0.10)"
+                clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
               >
                 <Image systemName="network" font={16} foregroundStyle="#007AFF" />
               </ZStack>
-              <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                <Text font="subheadline" bold foregroundColor="#000000">
+              <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                <Text font="subheadline" bold foregroundColor="#1C1C1E">
                   公网 IP 地址
                 </Text>
                 <Text font="caption2" foregroundColor={data?.publicIp ? "#007AFF" : "#8E8E93"}>
@@ -1136,8 +1149,8 @@ function ConsoleView() {
                 </Text>
               </VStack>
               <HStack
-                padding={{ horizontal: 8, vertical: 3 }}
-                background="rgba(142, 142, 147, 0.12)"
+                padding={{ horizontal: 9, vertical: 4 }}
+                background="rgba(142, 142, 147, 0.10)"
                 clipShape={{ type: "capsule" }}
               >
                 <Text font="caption2" bold foregroundColor="#6C6C70">
@@ -1149,37 +1162,42 @@ function ConsoleView() {
             <Divider padding={{ horizontal: 16 }} />
 
             {/* 开关机控制按钮行 (Apple iOS 26 Liquid Glass Capsules) */}
-            <HStack spacing={12} padding={{ horizontal: 16, vertical: 14 }}>
-              {/* 停止实例 (关机) 玻璃胶囊按钮 */}
+            <HStack spacing={16} padding={{ horizontal: 16, vertical: 14 }}>
+              {/* 停止实例按钮：运行中为淡红微光液态玻璃胶囊，停止时为幽灵按钮 */}
               <Button
                 action={confirmStop}
                 disabled={!isRunning || actionLoading}
                 buttonStyle="plain"
-                frame={{ maxWidth: Infinity, height: 46 }}
+                frame={{ maxWidth: Infinity, height: 44 }}
               >
                 <HStack
                   spacing={7}
                   alignment="center"
-                  frame={{ maxWidth: Infinity, height: 46 }}
-                  background={isRunning && !actionLoading ? "rgba(255, 59, 48, 0.12)" : "rgba(142, 142, 147, 0.08)"}
-                  border={{
-                    style: isRunning && !actionLoading ? "rgba(255, 59, 48, 0.32)" : "rgba(142, 142, 147, 0.16)",
-                    width: 1
-                  }}
+                  frame={{ maxWidth: Infinity, height: 44 }}
+                  background={isRunning && !actionLoading ? "rgba(255, 59, 48, 0.09)" : "transparent"}
+                  border={
+                    isRunning && !actionLoading
+                      ? { style: "rgba(255, 59, 48, 0.25)", width: 0.75 }
+                      : undefined
+                  }
                   clipShape={{ type: "capsule" }}
-                  shadow={isRunning && !actionLoading ? { color: "rgba(255, 59, 48, 0.20)", radius: 8, x: 0, y: 2 } : undefined}
-                  {...liquidGlass(true)}
+                  shadow={
+                    isRunning && !actionLoading
+                      ? { color: "rgba(255, 59, 48, 0.15)", radius: 6, x: 0, y: 2 }
+                      : undefined
+                  }
+                  {...(isRunning && !actionLoading ? liquidGlass(true) : {})}
                 >
                   <Image
-                    systemName="power.circle.fill"
-                    font={17}
-                    fontWeight="semibold"
-                    foregroundStyle={isRunning && !actionLoading ? "#FF3B30" : "#8E8E93"}
+                    systemName="power"
+                    font={15}
+                    fontWeight="bold"
+                    foregroundStyle={isRunning && !actionLoading ? "#FF3B30" : "#C7C7CC"}
                   />
                   <Text
                     font="subheadline"
-                    bold
-                    foregroundColor={isRunning && !actionLoading ? "#FF3B30" : "#8E8E93"}
+                    bold={isRunning && !actionLoading}
+                    foregroundColor={isRunning && !actionLoading ? "#FF3B30" : "#C7C7CC"}
                     lineLimit={1}
                   >
                     {actionLoading ? "处理中..." : "停止实例"}
@@ -1187,36 +1205,41 @@ function ConsoleView() {
                 </HStack>
               </Button>
 
-              {/* 启动实例 (开机) 玻璃胶囊按钮 */}
+              {/* 启动实例按钮：已开机时为极简灰色幽灵按钮，已关机时激活翠绿液态玻璃胶囊 */}
               <Button
                 action={() => handleAction("start")}
                 disabled={isRunning || actionLoading}
                 buttonStyle="plain"
-                frame={{ maxWidth: Infinity, height: 46 }}
+                frame={{ maxWidth: Infinity, height: 44 }}
               >
                 <HStack
                   spacing={7}
                   alignment="center"
-                  frame={{ maxWidth: Infinity, height: 46 }}
-                  background={!isRunning && !actionLoading ? "rgba(52, 199, 89, 0.14)" : "rgba(142, 142, 147, 0.08)"}
-                  border={{
-                    style: !isRunning && !actionLoading ? "rgba(52, 199, 89, 0.32)" : "rgba(142, 142, 147, 0.16)",
-                    width: 1
-                  }}
+                  frame={{ maxWidth: Infinity, height: 44 }}
+                  background={!isRunning && !actionLoading ? "rgba(52, 199, 89, 0.12)" : "transparent"}
+                  border={
+                    !isRunning && !actionLoading
+                      ? { style: "rgba(52, 199, 89, 0.28)", width: 0.75 }
+                      : undefined
+                  }
                   clipShape={{ type: "capsule" }}
-                  shadow={!isRunning && !actionLoading ? { color: "rgba(52, 199, 89, 0.20)", radius: 8, x: 0, y: 2 } : undefined}
-                  {...liquidGlass(true)}
+                  shadow={
+                    !isRunning && !actionLoading
+                      ? { color: "rgba(52, 199, 89, 0.16)", radius: 6, x: 0, y: 2 }
+                      : undefined
+                  }
+                  {...(!isRunning && !actionLoading ? liquidGlass(true) : {})}
                 >
                   <Image
-                    systemName="play.circle.fill"
-                    font={17}
-                    fontWeight="semibold"
-                    foregroundStyle={!isRunning && !actionLoading ? "#34C759" : "#8E8E93"}
+                    systemName="play"
+                    font={14}
+                    fontWeight="bold"
+                    foregroundStyle={!isRunning && !actionLoading ? "#248A3D" : "#C7C7CC"}
                   />
                   <Text
                     font="subheadline"
-                    bold
-                    foregroundColor={!isRunning && !actionLoading ? "#34C759" : "#8E8E93"}
+                    bold={!isRunning && !actionLoading}
+                    foregroundColor={!isRunning && !actionLoading ? "#248A3D" : "#C7C7CC"}
                     lineLimit={1}
                   >
                     {actionLoading ? "处理中..." : "启动实例"}
@@ -1225,12 +1248,12 @@ function ConsoleView() {
               </Button>
             </HStack>
           </VStack>
-          <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 4, bottom: 4 }}>
+          <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 8, bottom: 4 }}>
             为防误触，停止实例需要进行二次弹窗确认后方可执行。
           </Text>
 
           {/* Section 2: CDT 流量用量卡片 */}
-          <HStack padding={{ leading: 8, bottom: 2, top: 4 }} alignment="center">
+          <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
             <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
               CDT 互联网出网流量
             </Text>
@@ -1238,10 +1261,10 @@ function ConsoleView() {
             {data && (
               <HStack
                 padding={{ horizontal: 8, vertical: 3 }}
-                background={data.percentage >= 90 ? "rgba(255, 59, 48, 0.12)" : "rgba(52, 199, 89, 0.12)"}
+                background={data.percentage >= 90 ? "rgba(255, 59, 48, 0.10)" : "rgba(52, 199, 89, 0.10)"}
                 clipShape={{ type: "capsule" }}
               >
-                <Text font={12} bold foregroundColor={data.color}>
+                <Text font={12} bold foregroundColor={data.percentage >= 90 ? "#FF3B30" : "#248A3D"}>
                   已用 {data.percentage}%
                 </Text>
               </HStack>
@@ -1252,21 +1275,20 @@ function ConsoleView() {
           <VStack
             background="#FFFFFF"
             clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-            border={{ style: "rgba(0, 0, 0, 0.05)", width: 0.5 }}
-            shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 14, x: 0, y: 4 }}
+            shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
             spacing={0}
           >
-            {/* 流量主数据 */}
+            {/* 流量主数据 (基线对齐 items-baseline，修复 [object Object] Bug) */}
             <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
               <ZStack
                 frame={{ width: 36, height: 36 }}
-                background="rgba(175, 82, 222, 0.15)"
-                clipShape={{ type: "rect", cornerRadius: 10, style: "continuous" }}
+                background="rgba(175, 82, 222, 0.10)"
+                clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
               >
                 <Image systemName="arrow.up.and.down" font={16} foregroundStyle="#AF52DE" />
               </ZStack>
-              <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                <Text font="subheadline" bold foregroundColor="#000000">
+              <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                <Text font="subheadline" bold foregroundColor="#1C1C1E">
                   出网用量 / 阈值
                 </Text>
                 <Text font="caption2" foregroundColor="#8E8E93">
@@ -1275,19 +1297,24 @@ function ConsoleView() {
               </VStack>
               {data && (
                 <VStack alignment="trailing" spacing={2}>
-                  <Text font={22} bold foregroundColor={data.color}>
-                    {data.totalGB.toFixed(2)} <Text font={13} bold>GB</Text>
-                  </Text>
-                  <Text font={11} foregroundColor="#8E8E93">
+                  <HStack alignment="lastTextBaseline" spacing={4}>
+                    <Text font={28} bold foregroundColor="#1C1C1E">
+                      {data.totalGB.toFixed(2)}
+                    </Text>
+                    <Text font={14} bold foregroundColor="#1C1C1E">
+                      GB
+                    </Text>
+                  </HStack>
+                  <Text font={12} foregroundColor="#8E8E93">
                     / {data.thresholdGB} GB
                   </Text>
                 </VStack>
               )}
             </HStack>
 
-            {/* 两端全圆角进度条 */}
+            {/* 加粗圆角进度条 (高度 8px，左右内边距对齐) */}
             {data && (
-              <VStack padding={{ horizontal: 16, bottom: 14 }}>
+              <VStack padding={{ horizontal: 16, top: 2, bottom: 16 }}>
                 <ProgressView
                   value={Math.max(0.01, Math.min(1.0, data.percentage / 100))}
                   tint={data.color as any}
@@ -1296,74 +1323,74 @@ function ConsoleView() {
               </VStack>
             )}
 
-            {/* 三列指标卡片 (8pt网格，同心圆角 14pt) */}
+            <Divider padding={{ horizontal: 16 }} />
+
+            {/* 三列指标卡片 (通透布局，去灰底，数值加粗大字号，内边距 16px) */}
             {data ? (
-              <HStack padding={{ horizontal: 14, bottom: 14 }} spacing={8} alignment="center">
-                <VStack
-                  alignment="center"
-                  spacing={3}
-                  padding={{ vertical: 10, horizontal: 6 }}
-                  frame={{ maxWidth: Infinity }}
-                  background="rgba(242, 242, 247, 0.75)"
-                  border={{ style: "rgba(0, 0, 0, 0.03)", width: 0.5 }}
-                  clipShape={{ type: "rect", cornerRadius: 14, style: "continuous" }}
-                >
-                  <Text font="caption2" foregroundColor="#8E8E93">
+              <HStack padding={{ horizontal: 16, vertical: 16 }} alignment="center">
+                {/* 剩余可用 */}
+                <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
+                  <Text font={12} foregroundColor="#8E8E93">
                     剩余可用
                   </Text>
-                  <Text font="subheadline" bold foregroundColor="#007AFF">
-                    {data.remainingGB.toFixed(1)} G
-                  </Text>
+                  <HStack alignment="lastTextBaseline" spacing={2}>
+                    <Text font={20} bold foregroundColor="#007AFF">
+                      {data.remainingGB.toFixed(1)}
+                    </Text>
+                    <Text font={12} bold foregroundColor="#007AFF">
+                      GB
+                    </Text>
+                  </HStack>
                 </VStack>
 
-                <VStack
-                  alignment="center"
-                  spacing={3}
-                  padding={{ vertical: 10, horizontal: 6 }}
-                  frame={{ maxWidth: Infinity }}
-                  background="rgba(242, 242, 247, 0.75)"
-                  border={{ style: "rgba(0, 0, 0, 0.03)", width: 0.5 }}
-                  clipShape={{ type: "rect", cornerRadius: 14, style: "continuous" }}
-                >
-                  <Text font="caption2" foregroundColor="#8E8E93">
+                <Divider frame={{ height: 28 }} />
+
+                {/* 距结算重置 */}
+                <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
+                  <Text font={12} foregroundColor="#8E8E93">
                     距结算重置
                   </Text>
-                  <Text font="subheadline" bold foregroundColor="#007AFF">
-                    {data.daysRemaining} 天
-                  </Text>
+                  <HStack alignment="lastTextBaseline" spacing={2}>
+                    <Text font={20} bold foregroundColor="#1C1C1E">
+                      {data.daysRemaining}
+                    </Text>
+                    <Text font={12} bold foregroundColor="#8E8E93">
+                      天
+                    </Text>
+                  </HStack>
                 </VStack>
 
-                <VStack
-                  alignment="center"
-                  spacing={3}
-                  padding={{ vertical: 10, horizontal: 6 }}
-                  frame={{ maxWidth: Infinity }}
-                  background="rgba(242, 242, 247, 0.75)"
-                  border={{ style: "rgba(0, 0, 0, 0.03)", width: 0.5 }}
-                  clipShape={{ type: "rect", cornerRadius: 14, style: "continuous" }}
-                >
-                  <Text font="caption2" foregroundColor="#8E8E93">
+                <Divider frame={{ height: 28 }} />
+
+                {/* 建议日均 */}
+                <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
+                  <Text font={12} foregroundColor="#8E8E93">
                     建议日均
                   </Text>
-                  <Text font="subheadline" bold foregroundColor={data.color}>
-                    &lt; {data.dailyBudgetGB} G
-                  </Text>
+                  <HStack alignment="lastTextBaseline" spacing={2}>
+                    <Text font={20} bold foregroundColor={data.color}>
+                      &lt; {data.dailyBudgetGB}
+                    </Text>
+                    <Text font={12} bold foregroundColor={data.color}>
+                      GB
+                    </Text>
+                  </HStack>
                 </VStack>
               </HStack>
             ) : (
-              <HStack padding={14} alignment="center">
+              <HStack padding={16} alignment="center">
                 <Text font="caption2" foregroundColor="#8E8E93">
                   正在同步阿里云最新用量数据...
                 </Text>
               </HStack>
             )}
           </VStack>
-          <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 4, bottom: 4 }}>
+          <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 8, bottom: 4 }}>
             🛡️ 自动熔断：当出网流量达到 {config.trafficThresholdGB} GB 时将自动停止 ECS 实例防止产生账单。
           </Text>
 
           {/* Section 3: 控制台实时操作日志 */}
-          <HStack padding={{ leading: 8, bottom: 2, top: 4 }} alignment="center">
+          <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
             <Text font={13} fontWeight="semibold" foregroundColor="#6C6C70">
               实时操作日志
             </Text>
@@ -1375,51 +1402,56 @@ function ConsoleView() {
             >
               <HStack
                 spacing={5}
-                padding={{ horizontal: 10, vertical: 5 }}
+                padding={{ horizontal: 12, vertical: 6 }}
                 background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.25)", width: 1 }}
+                border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
                 clipShape={{ type: "capsule" }}
                 alignment="center"
                 {...liquidGlass(true)}
               >
                 <Image
                   systemName="arrow.clockwise"
-                  font={11}
+                  font={12}
                   fontWeight="bold"
                   foregroundStyle="#007AFF"
                 />
-                <Text font={11} bold foregroundColor="#007AFF">
+                <Text font={12} bold foregroundColor="#007AFF">
                   {loading ? "同步中..." : "刷新"}
                 </Text>
               </HStack>
             </Button>
           </HStack>
 
+          {/* 日志容器：固定最大高度，内部平滑滚动，等宽排版 */}
           <VStack
             background="#FFFFFF"
             clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-            border={{ style: "rgba(0, 0, 0, 0.05)", width: 0.5 }}
-            shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 14, x: 0, y: 4 }}
+            shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
             spacing={0}
             padding={{ horizontal: 16, vertical: 12 }}
+            frame={{ maxHeight: 180 }}
           >
-            {logs.length > 0 ? (
-              logs.map((log, index) => (
-                <VStack key={index} alignment="leading" spacing={0}>
-                  {index > 0 && <Divider padding={{ vertical: 6 }} />}
-                  <Text font={11} foregroundColor="#636366">
-                    {log}
+            <ScrollView showsIndicators={false}>
+              <VStack alignment="leading" spacing={8}>
+                {logs.length > 0 ? (
+                  logs.map((log, index) => (
+                    <HStack key={index} spacing={6} alignment="top">
+                      <Text font={11} foregroundColor="#8E8E93">•</Text>
+                      <Text font={11} foregroundColor="#636366">
+                        {log}
+                      </Text>
+                    </HStack>
+                  ))
+                ) : (
+                  <Text font={11} foregroundColor="#8E8E93">
+                    暂无日志，轻点右上角刷新同步。
                   </Text>
-                </VStack>
-              ))
-            ) : (
-              <Text font={11} foregroundColor="#8E8E93">
-                暂无日志，轻点右上角刷新同步。
-              </Text>
-            )}
+                )}
+              </VStack>
+            </ScrollView>
           </VStack>
-          <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 10, top: 4, bottom: 16 }}>
-            显示最近 6 条控制台指令与 OpenAPI 响应状态。
+          <Text font={12} foregroundColor="#8E8E93" padding={{ leading: 8, bottom: 20 }}>
+            显示最近 8 条控制台指令与 OpenAPI 响应状态。
           </Text>
         </VStack>
       </ScrollView>
