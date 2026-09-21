@@ -14,6 +14,7 @@ import {
   Widget,
   Navigation,
   Script,
+  ScrollView,
   VStack,
   HStack,
   ZStack,
@@ -502,25 +503,125 @@ function SettingsComponent({
   onSave: (newCfg: AppConfig) => void
   onCancel: () => void
 }) {
-  const [ak, setAk] = useState(currentConfig.accessKeyId)
-  const [sk, setSk] = useState(currentConfig.accessKeySecret)
+  const [ak, setAk] = useState(currentConfig.accessKeyId || "")
+  const [sk, setSk] = useState(currentConfig.accessKeySecret || "")
   const [region, setRegion] = useState(currentConfig.regionId || "cn-hongkong")
-  const [ecsId, setEcsId] = useState(currentConfig.ecsInstanceId)
+  const [ecsId, setEcsId] = useState(currentConfig.ecsInstanceId || "")
   const [threshold, setThreshold] = useState(String(currentConfig.trafficThresholdGB || 180))
-  const [autoStop, setAutoStop] = useState(currentConfig.autoStopOnExceed)
-  const [errNotice, setErrNotice] = useState<string | null>(null)
+  const [autoStop, setAutoStop] = useState(currentConfig.autoStopOnExceed ?? true)
+  const [errorNotice, setErrorNotice] = useState<string | null>(null)
+  const [successNotice, setSuccessNotice] = useState<string | null>(null)
+
+  // 智能剪贴板识别与导入
+  const handleSmartPaste = async () => {
+    try {
+      let text = ""
+      if (typeof Pasteboard !== "undefined" && (Pasteboard as any)?.getString) {
+        text = ((await Pasteboard.getString()) as string) || ""
+      }
+      if (!text.trim()) {
+        if (typeof Dialog !== "undefined" && Dialog.alert) {
+          await Dialog.alert({
+            title: "剪贴板为空",
+            message: "请先在微信、备忘录中复制包含阿里云 AccessKey 或实例 ID 的文本，再点击智能识别。"
+          })
+        } else {
+          setErrorNotice("剪贴板为空，请先复制凭据信息。")
+        }
+        return
+      }
+
+      let count = 0
+      // 匹配 AccessKey ID: LTAI 开头，16-24 位字符
+      const akMatch = text.match(/LTAI[A-Za-z0-9]{16,24}/i)
+      if (akMatch) {
+        setAk(akMatch[0].trim())
+        count++
+      }
+
+      // 匹配 ECS 实例 ID: i- 开头，16-24 位字符
+      const ecsMatch = text.match(/i-[a-z0-9]{16,24}/i)
+      if (ecsMatch) {
+        setEcsId(ecsMatch[0].trim())
+        count++
+      }
+
+      // 匹配 Region ID
+      const regMatch = text.match(/(cn-[a-z0-9-]+|ap-[a-z0-9-]+|us-[a-z0-9-]+)/i)
+      if (regMatch) {
+        setRegion(regMatch[0].trim())
+      }
+
+      // 匹配 AccessKey Secret (通常位于 Secret 关键字之后，或 28-34 位随机字符串)
+      const secretLabelMatch = text.match(/(?:Secret|SecretKey|KeySecret)[\s:=]*([A-Za-z0-9]{28,34})/i)
+      if (secretLabelMatch) {
+        setSk(secretLabelMatch[1].trim())
+        count++
+      } else {
+        const tokens = text.match(/[A-Za-z0-9]{28,34}/g)
+        if (tokens) {
+          for (const t of tokens) {
+            if (!t.startsWith("LTAI") && !t.startsWith("i-")) {
+              setSk(t.trim())
+              count++
+              break
+            }
+          }
+        }
+      }
+
+      if (count > 0) {
+        setErrorNotice(null)
+        setSuccessNotice(`🎉 成功智能识别并填入 ${count} 项配置！`)
+        if (typeof Dialog !== "undefined" && Dialog.alert) {
+          await Dialog.alert({
+            title: "识别成功",
+            message: `已自动解析并填入 ${count} 项阿里云信息，确认无误后点击下方保存即可！`
+          })
+        }
+      } else {
+        setErrorNotice("未能从剪贴板识别出阿里云凭据格式，请点击各输入项右侧按钮录入。")
+      }
+    } catch (err: any) {
+      setErrorNotice("读取剪贴板失败: " + (err?.message || String(err)))
+    }
+  }
+
+  // 弹窗输入辅助函数
+  const promptField = async (
+    title: string,
+    message: string,
+    currentVal: string,
+    placeholder: string,
+    onConfirm: (val: string) => void
+  ) => {
+    if (typeof Dialog !== "undefined" && Dialog.prompt) {
+      const res = await Dialog.prompt({
+        title,
+        message,
+        defaultValue: currentVal,
+        placeholder,
+        confirmLabel: "确定",
+        cancelLabel: "取消"
+      })
+      if (res !== null) {
+        onConfirm(res.trim())
+      }
+    }
+  }
 
   const handleSave = () => {
     if (!ak.trim() || !sk.trim() || !ecsId.trim()) {
-      setErrNotice("请填写完整的 AccessKey ID、Secret 与 ECS 实例 ID！")
+      setErrorNotice("请填写完整的 AccessKey ID、Secret 与 ECS 实例 ID！")
       return
     }
+    const numThreshold = parseFloat(threshold) || 180
     const newCfg: AppConfig = {
       accessKeyId: ak.trim(),
       accessKeySecret: sk.trim(),
       regionId: region.trim() || "cn-hongkong",
       ecsInstanceId: ecsId.trim(),
-      trafficThresholdGB: parseFloat(threshold) || 180,
+      trafficThresholdGB: numThreshold,
       resetDayOfMonth: 1,
       autoStopOnExceed: autoStop
     }
@@ -529,132 +630,246 @@ function SettingsComponent({
   }
 
   return (
-    <VStack alignment="leading" spacing={16} padding={16}>
-      <HStack>
-        <Text font="title2" bold>
-          ⚙️ 阿里云参数配置
-        </Text>
-        <Spacer />
-        {isConfigReady(currentConfig) && (
-          <Button title="取消" font="subheadline" action={onCancel} />
-        )}
-      </HStack>
-
-      <Text font="caption1" foregroundColor="#8E8E93">
-        凭据保存在本地 Scripting Storage 中，安全且永不上云。
-      </Text>
-
-      {errNotice && (
-        <HStack padding={10} background="rgba(255, 69, 58, 0.12)" cornerRadius={8}>
-          <Text font="caption2" foregroundColor="#FF453A">
-            ⚠️ {errNotice}
-          </Text>
-        </HStack>
-      )}
-
-      <VStack
-        alignment="leading"
-        spacing={12}
-        padding={14}
-        background="rgba(142, 142, 147, 0.08)"
-        cornerRadius={12}
-      >
-        <VStack alignment="leading" spacing={4}>
-          <Text font="caption2" bold foregroundColor="#8E8E93">
-            AccessKey ID
-          </Text>
-          <TextField
-            title="LTAIxxxxxxxxxxxx"
-            value={ak}
-            autocorrectionDisabled
-            textInputAutocapitalization="never"
-            onSubmit={() => {}}
-          />
-        </VStack>
-
-        <Divider />
-
-        <VStack alignment="leading" spacing={4}>
-          <Text font="caption2" bold foregroundColor="#8E8E93">
-            AccessKey Secret
-          </Text>
-          <TextField
-            title="xxxxxxxxxxxxxxxxxxxxxxxxxx"
-            value={sk}
-            autocorrectionDisabled
-            textInputAutocapitalization="never"
-            onSubmit={() => {}}
-          />
-        </VStack>
-
-        <Divider />
-
-        <VStack alignment="leading" spacing={4}>
-          <Text font="caption2" bold foregroundColor="#8E8E93">
-            ECS 地域 (Region ID)
-          </Text>
-          <TextField
-            title="cn-hongkong"
-            value={region}
-            autocorrectionDisabled
-            textInputAutocapitalization="never"
-            onSubmit={() => {}}
-          />
-        </VStack>
-
-        <Divider />
-
-        <VStack alignment="leading" spacing={4}>
-          <Text font="caption2" bold foregroundColor="#8E8E93">
-            ECS 实例 ID
-          </Text>
-          <TextField
-            title="i-j6cxxxxxxxxxxxx"
-            value={ecsId}
-            autocorrectionDisabled
-            textInputAutocapitalization="never"
-            onSubmit={() => {}}
-          />
-        </VStack>
-
-        <Divider />
-
-        <VStack alignment="leading" spacing={4}>
-          <Text font="caption2" bold foregroundColor="#8E8E93">
-            CDT 流量警戒阈值 (GB)
-          </Text>
-          <TextField
-            title="180"
-            value={threshold}
-            keyboardType="numberPad"
-            onSubmit={() => {}}
-          />
-        </VStack>
-
-        <Divider />
-
+    <ScrollView>
+      <VStack alignment="leading" spacing={16} padding={16}>
+        {/* 顶部导航 */}
         <HStack>
-          <VStack alignment="leading" spacing={2}>
-            <Text font="subheadline">超额自动关机防扣费</Text>
+          <Text font="title2" bold>
+            ⚙️ 阿里云参数配置
+          </Text>
+          <Spacer />
+          {isConfigReady(currentConfig) && (
+            <Button title="取消" font="subheadline" action={onCancel} />
+          )}
+        </HStack>
+
+        <Text font="caption1" foregroundColor="#8E8E93">
+          所有凭据仅保存在您手机本机的 Scripting 隔离存储空间中，绝不上云或外泄。
+        </Text>
+
+        {/* 快捷智能导入卡片 */}
+        <HStack
+          padding={12}
+          background="rgba(10, 132, 255, 0.12)"
+          cornerRadius={12}
+          alignment="center"
+        >
+          <VStack alignment="leading" spacing={2} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+            <Text font="subheadline" bold foregroundColor="#0A84FF">
+              📋 智能剪贴板识别
+            </Text>
             <Text font="caption2" foregroundColor="#8E8E93">
-              当达到阈值时自动停止 ECS
+              在手机上复制包含 AK、Secret、实例ID 的文本后点此自动填入
             </Text>
           </VStack>
-          <Spacer />
-          <Toggle
-            isOn={autoStop}
-            onToggle={() => setAutoStop(!autoStop)}
+          <Button
+            title="一键识别"
+            buttonStyle="borderedProminent"
+            controlSize="regular"
+            action={handleSmartPaste}
           />
         </HStack>
-      </VStack>
 
-      <Button
-        title="💾 保存配置并进入控制台"
-        buttonStyle="borderedProminent"
-        controlSize="large"
-        action={handleSave}
-      />
-    </VStack>
+        {/* 错误提示条 */}
+        {errorNotice && (
+          <HStack padding={10} background="rgba(255, 69, 58, 0.12)" cornerRadius={8}>
+            <Text font="caption2" foregroundColor="#FF453A">
+              ⚠️ {errorNotice}
+            </Text>
+          </HStack>
+        )}
+
+        {/* 成功提示条 */}
+        {successNotice && (
+          <HStack padding={10} background="rgba(48, 209, 88, 0.12)" cornerRadius={8}>
+            <Text font="caption2" foregroundColor="#30D158">
+              {successNotice}
+            </Text>
+          </HStack>
+        )}
+
+        {/* 字段输入卡片列表 */}
+        <VStack spacing={12} frame={{ maxWidth: "infinity" }}>
+          {/* AccessKey ID */}
+          <HStack
+            padding={12}
+            background="rgba(142, 142, 147, 0.12)"
+            cornerRadius={10}
+            alignment="center"
+          >
+            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+              <Text font="caption2" bold foregroundColor="#8E8E93">
+                AccessKey ID (LTAI 开头)
+              </Text>
+              <Text
+                font="subheadline"
+                bold
+                foregroundColor={ak ? "#FFFFFF" : "#0A84FF"}
+                lineLimit={1}
+              >
+                {ak ? ak : "轻点右侧按钮输入 >"}
+              </Text>
+            </VStack>
+            <Button
+              title={ak ? "修改" : "输入"}
+              buttonStyle="bordered"
+              controlSize="small"
+              action={() =>
+                promptField("设置 AccessKey ID", "请输入阿里云 AccessKey ID (如 LTAI...)", ak, "LTAI5xxxxxxxxxxx", setAk)
+              }
+            />
+          </HStack>
+
+          {/* AccessKey Secret */}
+          <HStack
+            padding={12}
+            background="rgba(142, 142, 147, 0.12)"
+            cornerRadius={10}
+            alignment="center"
+          >
+            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+              <Text font="caption2" bold foregroundColor="#8E8E93">
+                AccessKey Secret
+              </Text>
+              <Text
+                font="subheadline"
+                bold
+                foregroundColor={sk ? "#30D158" : "#0A84FF"}
+                lineLimit={1}
+              >
+                {sk ? "••••••••••••••••••••••••••••" : "轻点右侧按钮输入 >"}
+              </Text>
+            </VStack>
+            <Button
+              title={sk ? "修改" : "输入"}
+              buttonStyle="bordered"
+              controlSize="small"
+              action={() =>
+                promptField("设置 AccessKey Secret", "请输入阿里云 AccessKey Secret", sk, "您的 Secret Key", setSk)
+              }
+            />
+          </HStack>
+
+          {/* ECS 所在地域 */}
+          <HStack
+            padding={12}
+            background="rgba(142, 142, 147, 0.12)"
+            cornerRadius={10}
+            alignment="center"
+          >
+            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+              <Text font="caption2" bold foregroundColor="#8E8E93">
+                ECS 所在地域 (Region ID)
+              </Text>
+              <Text
+                font="subheadline"
+                bold
+                foregroundColor="#FFFFFF"
+                lineLimit={1}
+              >
+                {region || "cn-hongkong"}
+              </Text>
+            </VStack>
+            <Button
+              title="修改"
+              buttonStyle="bordered"
+              controlSize="small"
+              action={() =>
+                promptField("设置 ECS 地域", "如 cn-hongkong, cn-hangzhou, cn-shanghai, ap-southeast-1 等", region, "cn-hongkong", setRegion)
+              }
+            />
+          </HStack>
+
+          {/* ECS 实例 ID */}
+          <HStack
+            padding={12}
+            background="rgba(142, 142, 147, 0.12)"
+            cornerRadius={10}
+            alignment="center"
+          >
+            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+              <Text font="caption2" bold foregroundColor="#8E8E93">
+                ECS 实例 ID (i- 开头)
+              </Text>
+              <Text
+                font="subheadline"
+                bold
+                foregroundColor={ecsId ? "#FFFFFF" : "#0A84FF"}
+                lineLimit={1}
+              >
+                {ecsId ? ecsId : "轻点右侧按钮输入 >"}
+              </Text>
+            </VStack>
+            <Button
+              title={ecsId ? "修改" : "输入"}
+              buttonStyle="bordered"
+              controlSize="small"
+              action={() =>
+                promptField("设置 ECS 实例 ID", "请输入您要控制的 ECS 实例 ID (如 i-j6c...)", ecsId, "i-xxxxxxxxxxxx", setEcsId)
+              }
+            />
+          </HStack>
+
+          {/* CDT 流量警戒阈值 */}
+          <HStack
+            padding={12}
+            background="rgba(142, 142, 147, 0.12)"
+            cornerRadius={10}
+            alignment="center"
+          >
+            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+              <Text font="caption2" bold foregroundColor="#8E8E93">
+                CDT 流量警戒阈值 (GB)
+              </Text>
+              <Text font="subheadline" bold foregroundColor="#FF9F0A">
+                {threshold || "180"} GB / 月
+              </Text>
+            </VStack>
+            <Button
+              title="修改"
+              buttonStyle="bordered"
+              controlSize="small"
+              action={() =>
+                promptField("设置 CDT 流量警戒阈值 (GB)", "输入当月出网流量警戒值 (超出后告警或自动关机)", threshold, "180", setThreshold)
+              }
+            />
+          </HStack>
+
+          {/* 超额自动关机防扣费开关 */}
+          <HStack
+            padding={12}
+            background="rgba(142, 142, 147, 0.12)"
+            cornerRadius={10}
+            alignment="center"
+          >
+            <VStack alignment="leading" spacing={2} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+              <Text font="subheadline" bold>
+                超额自动关机防扣费
+              </Text>
+              <Text font="caption2" foregroundColor="#8E8E93">
+                当出网流量超过警戒阈值时自动停止 ECS
+              </Text>
+            </VStack>
+            <Button
+              title={autoStop ? "🟢 已开启" : "⚪ 已关闭"}
+              buttonStyle="bordered"
+              controlSize="small"
+              action={() => setAutoStop(!autoStop)}
+            />
+          </HStack>
+        </VStack>
+
+        <Spacer />
+
+        {/* 底部保存按钮 */}
+        <Button
+          title="💾 保存配置并进入控制台"
+          buttonStyle="borderedProminent"
+          controlSize="large"
+          action={handleSave}
+        />
+      </VStack>
+    </ScrollView>
   )
 }
 
