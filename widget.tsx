@@ -6,7 +6,7 @@
  * 通用版特性：
  * 1. 自动从 Scripting Storage 读取用户配置，绝无硬编码凭据
  * 2. 若用户尚未配置，小组件优雅提示用户在 App 内打开脚本进行配置
- * 3. 兼容 iOS 16/17/18 主屏幕（小号/中号/大号）及锁屏小组件
+ * 3. 兼容 iOS 16+ 主屏幕（小号/中号/大号）及锁屏小组件
  * 4. 纯 TS 内置 HMAC-SHA1 签名与 POP API 客户端
  */
 
@@ -18,7 +18,8 @@ import {
   Text,
   Image,
   Spacer,
-  Circle
+  Circle,
+  Divider
 } from "scripting"
 
 // ==================== 1. 本地存储配置读取 ====================
@@ -34,6 +35,7 @@ interface AppConfig {
 }
 
 const STORAGE_KEY = "aliyun_cdt_monitor_config"
+const TRAFFIC_HISTORY_KEY = "aliyun_cdt_daily_history_v1"
 
 const DEFAULT_CONFIG: AppConfig = {
   accessKeyId: "",
@@ -66,6 +68,119 @@ function isConfigReady(cfg: AppConfig): boolean {
     Boolean(cfg.accessKeySecret?.trim()) &&
     Boolean(cfg.ecsInstanceId?.trim())
   )
+}
+
+interface TrafficSnapshot {
+  date: string
+  totalGB: number
+  updatedAt: number
+}
+
+interface TrafficHistory {
+  version: 1
+  scope: string
+  month: string
+  snapshots: TrafficSnapshot[]
+}
+
+interface DailyUsagePoint {
+  date: string
+  label: string
+  valueGB: number | null
+  isToday: boolean
+}
+
+function localDateKey(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+function offsetDate(date: Date, dayOffset: number): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + dayOffset)
+}
+
+function historyScope(config: AppConfig): string {
+  const source = `${config.accessKeyId.trim()}|cdt`
+  let hash = 2166136261
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+function loadTrafficHistory(): TrafficHistory | null {
+  try {
+    const saved = Storage.get(TRAFFIC_HISTORY_KEY)
+    if (!saved) return null
+    const parsed = typeof saved === "string" ? JSON.parse(saved) : saved
+    if (parsed?.version !== 1 || !Array.isArray(parsed?.snapshots)) return null
+    return parsed as TrafficHistory
+  } catch (error) {
+    console.error("读取流量历史失败:", error)
+    return null
+  }
+}
+
+function buildDailyUsage(config: AppConfig, totalGB: number, now: Date): DailyUsagePoint[] {
+  const today = localDateKey(now)
+  const month = today.slice(0, 7)
+  const scope = historyScope(config)
+  let history = loadTrafficHistory()
+
+  if (history?.scope !== scope || history?.month !== month) {
+    history = { version: 1, scope, month, snapshots: [] }
+  }
+
+  const snapshots = history.snapshots
+    .filter(item => item?.date?.startsWith(month) && Number.isFinite(item?.totalGB))
+    .sort((a, b) => a.date.localeCompare(b.date))
+  const latestSnapshot = snapshots[snapshots.length - 1]
+
+  // 月累计值下降通常代表账期重置或接口口径变化，旧基线不能继续使用。
+  if (latestSnapshot && totalGB + 0.005 < latestSnapshot.totalGB) {
+    snapshots.length = 0
+  }
+
+  const todaySnapshot = snapshots.find(item => item.date === today)
+  if (todaySnapshot) {
+    todaySnapshot.totalGB = totalGB
+    todaySnapshot.updatedAt = now.getTime()
+  } else {
+    snapshots.push({ date: today, totalGB, updatedAt: now.getTime() })
+  }
+
+  history.snapshots = snapshots.slice(-32)
+  try {
+    Storage.set(TRAFFIC_HISTORY_KEY, JSON.stringify(history))
+  } catch (error) {
+    console.error("保存流量历史失败:", error)
+  }
+
+  const byDate = new Map(history.snapshots.map(item => [item.date, item]))
+  const weekdayLabels = ["日", "一", "二", "三", "四", "五", "六"]
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = offsetDate(now, index - 6)
+    const dateKey = localDateKey(date)
+    const previousKey = localDateKey(offsetDate(date, -1))
+    const current = byDate.get(dateKey)
+    const previous = byDate.get(previousKey)
+    let valueGB: number | null = null
+
+    if (current && previous && current.totalGB + 0.005 >= previous.totalGB) {
+      valueGB = Math.max(0, Number((current.totalGB - previous.totalGB).toFixed(2)))
+    }
+
+    return {
+      date: dateKey,
+      label: index === 6 ? "今" : weekdayLabels[date.getDay()],
+      valueGB,
+      isToday: index === 6
+    }
+  })
 }
 
 // ==================== 2. 纯 TS HMAC-SHA1 与 POP 签名算法 ====================
@@ -239,6 +354,10 @@ interface WidgetData {
   percentage: number
   daysRemaining: number
   dailyBudgetGB: string
+  dailyUsage: DailyUsagePoint[]
+  sevenDayTotalGB: number | null
+  todayEstimatedGB: number | null
+  updatedAt: Date
   ecsStatus: "Running" | "Stopped" | "Starting" | "Stopping" | "Unknown"
   publicIp?: string
   color: string
@@ -288,7 +407,15 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
   const currentDay = now.getDate()
   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
   const daysRemaining = Math.max(1, lastDay - currentDay + 1)
-  const dailyBudgetGB = (remainingGB / daysRemaining).toFixed(1)
+  const dailyBudgetGB = (remainingGB / daysRemaining).toFixed(2)
+  const dailyUsage = buildDailyUsage(config, totalGB, now)
+  const knownDailyValues = dailyUsage
+    .map(item => item.valueGB)
+    .filter((value): value is number => value !== null)
+  const sevenDayTotalGB = knownDailyValues.length > 0
+    ? Number(knownDailyValues.reduce((sum, value) => sum + value, 0).toFixed(2))
+    : null
+  const todayEstimatedGB = dailyUsage[dailyUsage.length - 1]?.valueGB ?? null
 
   const color = percentage >= 90 ? "#FF453A" : percentage >= 70 ? "#FF9F0A" : "#30D158"
 
@@ -299,6 +426,10 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
     percentage,
     daysRemaining,
     dailyBudgetGB,
+    dailyUsage,
+    sevenDayTotalGB,
+    todayEstimatedGB,
+    updatedAt: now,
     ecsStatus,
     publicIp,
     color
@@ -334,6 +465,7 @@ function TrafficRing({
   lineWidth,
   value,
   caption,
+  subcaption,
   valueFont,
   captionFont
 }: {
@@ -342,6 +474,7 @@ function TrafficRing({
   lineWidth: number
   value: string
   caption?: string
+  subcaption?: string
   valueFont: number
   captionFont?: number
 }) {
@@ -367,7 +500,15 @@ function TrafficRing({
         frame={{ width: size, height: size }}
       />
       <VStack spacing={0} alignment="center">
-        <Text font={valueFont} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+        <Text
+          font={valueFont}
+          bold
+          monospacedDigit
+          lineLimit={1}
+          minScaleFactor={0.65}
+          allowsTightening={true}
+          foregroundStyle="label"
+        >
           {value}
         </Text>
         {caption && (
@@ -375,8 +516,94 @@ function TrafficRing({
             {caption}
           </Text>
         )}
+        {subcaption && (
+          <Text font={Math.max(7, (captionFont || 9) - 1)} lineLimit={1} foregroundColor="#8E8E93">
+            {subcaption}
+          </Text>
+        )}
       </VStack>
     </ZStack>
+  )
+}
+
+function formatEstimate(value: number | null, precision: number = 2): string {
+  return value === null ? "--" : value.toFixed(precision)
+}
+
+function formatUpdateTime(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
+}
+
+function DailyBars({
+  data,
+  chartHeight,
+  barWidth,
+  spacing,
+  showValues,
+  fullWeekday
+}: {
+  data: WidgetData
+  chartHeight: number
+  barWidth: number
+  spacing: number
+  showValues: boolean
+  fullWeekday: boolean
+}) {
+  const knownValues = data.dailyUsage
+    .map(item => item.valueGB)
+    .filter((value): value is number => value !== null)
+  const maximum = Math.max(0.01, ...knownValues)
+
+  return (
+    <HStack spacing={spacing} alignment="bottom" frame={{ maxWidth: Infinity }}>
+      {data.dailyUsage.map(point => {
+        const fillHeight = point.valueGB === null || point.valueGB <= 0
+          ? 0
+          : Math.max(7, Math.round((point.valueGB / maximum) * chartHeight))
+        const label = point.isToday ? "今天" : fullWeekday ? `周${point.label}` : point.label
+        const fillColor = point.isToday ? "#0A84FF" : "#30D158"
+
+        return (
+          <VStack key={point.date} spacing={3} alignment="center" frame={{ maxWidth: Infinity }}>
+            {showValues && (
+              <Text
+                font={8}
+                bold={point.isToday}
+                monospacedDigit
+                lineLimit={1}
+                minScaleFactor={0.72}
+                foregroundColor={point.isToday ? "#0A84FF" : "#8E8E93"}
+              >
+                {formatEstimate(point.valueGB, fullWeekday ? 2 : 1)}
+              </Text>
+            )}
+            <VStack
+              spacing={0}
+              frame={{ width: barWidth, height: chartHeight, alignment: "bottom" }}
+              background="rgba(142, 142, 147, 0.14)"
+              clipShape={{ type: "capsule" }}
+            >
+              <Spacer />
+              {point.valueGB !== null && point.valueGB > 0 && (
+                <VStack
+                  frame={{ width: barWidth, height: fillHeight }}
+                  background={fillColor}
+                  clipShape={{ type: "capsule" }}
+                />
+              )}
+            </VStack>
+            <Text
+              font={8}
+              bold={point.isToday}
+              lineLimit={1}
+              foregroundColor={point.isToday ? "#0A84FF" : "#8E8E93"}
+            >
+              {label}
+            </Text>
+          </VStack>
+        )
+      })}
+    </HStack>
   )
 }
 
@@ -414,8 +641,8 @@ function SmallWidgetView({ data }: { data: WidgetData }) {
   return (
     <VStack
       alignment="leading"
-      spacing={6}
-      padding={{ horizontal: 12, vertical: 11 }}
+      spacing={4}
+      padding={{ horizontal: 10, vertical: 9 }}
       widgetBackground="systemBackground"
       frame={{ maxWidth: Infinity, maxHeight: Infinity }}
     >
@@ -439,24 +666,36 @@ function SmallWidgetView({ data }: { data: WidgetData }) {
         <Spacer />
         <TrafficRing
           data={data}
-          size={84}
+          size={76}
           lineWidth={7}
-          value={data.totalGB.toFixed(1)}
+          value={data.totalGB.toFixed(2)}
           caption={`/ ${data.thresholdGB} GB`}
-          valueFont={20}
-          captionFont={9}
+          subcaption={`${data.percentage.toFixed(1)}%`}
+          valueFont={17}
+          captionFont={8}
         />
         <Spacer />
       </HStack>
 
-      <HStack alignment="center">
-        <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
-          剩余 {data.remainingGB.toFixed(1)} GB
-        </Text>
-        <Spacer />
-        <Text font={10} bold monospacedDigit lineLimit={1} foregroundStyle="label">
-          {data.daysRemaining} 天
-        </Text>
+      <HStack spacing={4} alignment="top" frame={{ maxWidth: Infinity }}>
+        <VStack alignment="leading" spacing={1} frame={{ maxWidth: Infinity }}>
+          <Text font={8} lineLimit={1} foregroundColor="#8E8E93">今日估算</Text>
+          <Text font={9} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} allowsTightening={true} foregroundStyle="label">
+            {formatEstimate(data.todayEstimatedGB)} GB
+          </Text>
+        </VStack>
+        <VStack alignment="center" spacing={1} frame={{ maxWidth: Infinity }}>
+          <Text font={8} lineLimit={1} foregroundColor="#8E8E93">日均可用</Text>
+          <Text font={9} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} allowsTightening={true} foregroundStyle="label">
+            {data.dailyBudgetGB} GB
+          </Text>
+        </VStack>
+        <VStack alignment="trailing" spacing={1} frame={{ maxWidth: Infinity }}>
+          <Text font={8} lineLimit={1} foregroundColor="#8E8E93">近 7 日</Text>
+          <Text font={9} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} allowsTightening={true} foregroundStyle="label">
+            {formatEstimate(data.sevenDayTotalGB)} GB
+          </Text>
+        </VStack>
       </HStack>
     </VStack>
   )
@@ -469,7 +708,7 @@ function MediumWidgetView({ data }: { data: WidgetData }) {
   return (
     <VStack
       alignment="leading"
-      spacing={8}
+      spacing={7}
       padding={{ horizontal: 16, vertical: 12 }}
       widgetBackground="systemBackground"
       frame={{ maxWidth: Infinity, maxHeight: Infinity }}
@@ -490,51 +729,175 @@ function MediumWidgetView({ data }: { data: WidgetData }) {
         </HStack>
       </HStack>
 
-      <HStack spacing={14} alignment="center" frame={{ maxWidth: Infinity, maxHeight: Infinity }}>
+      <HStack spacing={12} alignment="center" frame={{ maxWidth: Infinity, maxHeight: Infinity }}>
         <TrafficRing
           data={data}
-          size={92}
+          size={84}
           lineWidth={8}
-          value={data.totalGB.toFixed(1)}
+          value={data.totalGB.toFixed(2)}
           caption="GB 已用"
-          valueFont={20}
+          subcaption={`${data.percentage.toFixed(1)}%`}
+          valueFont={18}
+          captionFont={8}
+        />
+
+        <VStack alignment="leading" spacing={5} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+          <HStack spacing={10} frame={{ maxWidth: Infinity }} alignment="top">
+            <VStack alignment="leading" spacing={2}>
+              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
+                本月剩余
+              </Text>
+              <HStack alignment="bottom" spacing={2}>
+                <Text font={15} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+                  {data.remainingGB.toFixed(2)}
+                </Text>
+                <Text font={8} lineLimit={1} foregroundColor="#8E8E93" padding={{ bottom: 1 }}>GB</Text>
+              </HStack>
+            </VStack>
+            <Spacer />
+            <VStack alignment="trailing" spacing={2}>
+              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
+                日均可用
+              </Text>
+              <HStack alignment="bottom" spacing={2}>
+                <Text font={15} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+                  {data.dailyBudgetGB}
+                </Text>
+                <Text font={8} lineLimit={1} foregroundColor="#8E8E93" padding={{ bottom: 1 }}>GB/天</Text>
+              </HStack>
+            </VStack>
+          </HStack>
+
+          <HStack alignment="center" frame={{ maxWidth: Infinity }}>
+            <Text font={8} lineLimit={1} foregroundColor="#8E8E93">
+              7 日估算 · 余 {data.daysRemaining} 天
+            </Text>
+            <Spacer />
+            <Text font={9} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+              {formatEstimate(data.sevenDayTotalGB)} GB
+            </Text>
+          </HStack>
+
+          <DailyBars
+            data={data}
+            chartHeight={30}
+            barWidth={12}
+            spacing={2}
+            showValues={true}
+            fullWeekday={false}
+          />
+        </VStack>
+      </HStack>
+    </VStack>
+  )
+}
+
+/** 大号小组件 (systemLarge) */
+function LargeWidgetView({ data }: { data: WidgetData }) {
+  const status = getECSStatusMeta(data.ecsStatus)
+
+  return (
+    <VStack
+      alignment="leading"
+      spacing={9}
+      padding={{ horizontal: 18, vertical: 15 }}
+      widgetBackground="systemBackground"
+      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
+    >
+      <HStack alignment="center">
+        <HStack spacing={6} alignment="center">
+          <Image systemName="cloud.fill" font={14} foregroundStyle="systemBlue" />
+          <Text font="subheadline" bold lineLimit={1} foregroundStyle="label">阿里云 CDT</Text>
+        </HStack>
+        <Spacer />
+        <HStack spacing={5} alignment="center">
+          <Circle widgetAccentable fill={status.color} frame={{ width: 7, height: 7 }} />
+          <Text font={10} bold lineLimit={1} foregroundColor={status.color}>ECS {status.label}</Text>
+        </HStack>
+      </HStack>
+
+      <HStack spacing={18} alignment="center" frame={{ maxWidth: Infinity }}>
+        <TrafficRing
+          data={data}
+          size={106}
+          lineWidth={9}
+          value={data.totalGB.toFixed(2)}
+          caption="GB 本月已用"
+          subcaption={`${data.percentage.toFixed(1)}%`}
+          valueFont={22}
           captionFont={9}
         />
 
-        <VStack alignment="leading" spacing={7} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-          <VStack alignment="leading" spacing={1}>
-            <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
-              本月剩余可用
-            </Text>
-            <HStack alignment="bottom" spacing={3}>
-              <Text font={22} bold monospacedDigit lineLimit={1} foregroundStyle="label">
-                {data.remainingGB.toFixed(1)}
-              </Text>
-              <Text font={10} lineLimit={1} foregroundColor="#8E8E93" padding={{ bottom: 2 }}>
-                GB
-              </Text>
-            </HStack>
-          </VStack>
-
-          <HStack spacing={12} frame={{ maxWidth: Infinity }} alignment="top">
+        <VStack alignment="leading" spacing={9} frame={{ maxWidth: Infinity }}>
+          <HStack alignment="top" frame={{ maxWidth: Infinity }}>
             <VStack alignment="leading" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
-                距结算
+              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">本月剩余</Text>
+              <Text font={17} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+                {data.remainingGB.toFixed(2)} GB
               </Text>
-              <Text font={11} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+            </VStack>
+            <Spacer />
+            <VStack alignment="trailing" spacing={2}>
+              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">距结算</Text>
+              <Text font={17} bold monospacedDigit lineLimit={1} foregroundStyle="label">
                 {data.daysRemaining} 天
               </Text>
             </VStack>
+          </HStack>
+
+          <HStack alignment="top" frame={{ maxWidth: Infinity }}>
             <VStack alignment="leading" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
-                建议日均
+              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">今日估算</Text>
+              <Text font={14} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+                {formatEstimate(data.todayEstimatedGB)} GB
               </Text>
-              <Text font={11} bold monospacedDigit lineLimit={1} foregroundStyle="label">
-                &lt; {data.dailyBudgetGB} GB
+            </VStack>
+            <Spacer />
+            <VStack alignment="trailing" spacing={2}>
+              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">近 7 日</Text>
+              <Text font={14} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+                {formatEstimate(data.sevenDayTotalGB)} GB
               </Text>
             </VStack>
           </HStack>
+
+          <HStack alignment="bottom" frame={{ maxWidth: Infinity }}>
+            <Text font={9} lineLimit={1} foregroundColor="#8E8E93">剩余日均可用</Text>
+            <Spacer />
+            <Text font={15} bold monospacedDigit lineLimit={1} foregroundStyle="label">
+              {data.dailyBudgetGB} GB/天
+            </Text>
+          </HStack>
         </VStack>
+      </HStack>
+
+      <Divider />
+
+      <HStack alignment="center" frame={{ maxWidth: Infinity }}>
+        <Text font={10} lineLimit={1} foregroundColor="#8E8E93">每日估算用量</Text>
+        <Spacer />
+        <Text font={9} bold lineLimit={1} foregroundColor="#8E8E93">单位 GB</Text>
+      </HStack>
+
+      <DailyBars
+        data={data}
+        chartHeight={82}
+        barWidth={26}
+        spacing={8}
+        showValues={true}
+        fullWeekday={true}
+      />
+
+      <Spacer />
+      <HStack alignment="center" frame={{ maxWidth: Infinity }}>
+        <HStack spacing={5} alignment="center">
+          <Image systemName="clock" font={9} foregroundStyle="#FF9F0A" />
+          <Text font={9} bold lineLimit={1} foregroundColor="#C66B00">日用量为本机采样估算</Text>
+        </HStack>
+        <Spacer />
+        <Text font={9} monospacedDigit lineLimit={1} foregroundColor="#8E8E93">
+          {formatUpdateTime(data.updatedAt)} 更新
+        </Text>
       </HStack>
     </VStack>
   )
@@ -561,7 +924,7 @@ function AccessoryRectangularView({ data }: { data: WidgetData }) {
       <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
         <HStack alignment="center">
           <Text font={14} bold monospacedDigit lineLimit={1}>
-            {data.totalGB.toFixed(1)} GB
+            {data.totalGB.toFixed(2)} GB
           </Text>
           <Spacer />
           <HStack spacing={4} alignment="center">
@@ -585,7 +948,7 @@ function AccessoryInlineView({ data }: { data: WidgetData }) {
 
   return (
     <Text lineLimit={1} monospacedDigit>
-      CDT {data.totalGB.toFixed(1)}/{data.thresholdGB}G · {status.shortLabel}
+      CDT {data.totalGB.toFixed(2)}/{data.thresholdGB}G · {status.shortLabel}
     </Text>
   )
 }
@@ -609,7 +972,9 @@ async function main() {
       Widget.present(<AccessoryInlineView data={data} />)
     } else if (family === "accessoryRectangular") {
       Widget.present(<AccessoryRectangularView data={data} />)
-    } else if (family === "systemMedium" || family === "systemLarge") {
+    } else if (family === "systemLarge") {
+      Widget.present(<LargeWidgetView data={data} />)
+    } else if (family === "systemMedium") {
       Widget.present(<MediumWidgetView data={data} />)
     } else {
       Widget.present(<SmallWidgetView data={data} />)
