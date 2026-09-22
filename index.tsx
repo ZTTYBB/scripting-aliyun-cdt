@@ -368,6 +368,17 @@ async function executeECSAction(action: "start" | "stop", config: AppConfig) {
   })
 }
 
+function splitLogLine(log: string): { time: string; message: string } {
+  const match = log.match(/^(\[[^\]]+\])\s*(.*)$/)
+  return match ? { time: match[1], message: match[2] } : { time: "", message: log }
+}
+
+function logMessageColor(log: string): string {
+  if (/错误|失败/.test(log)) return "systemRed"
+  if (/成功|完成|已发送/.test(log)) return "systemGreen"
+  return "label"
+}
+
 // ==================== 4. Apple iOS 26 Liquid Glass 材质与动效系统 ====================
 
 declare const UIGlass: {
@@ -398,6 +409,27 @@ function liquidGlass(interactive: boolean = true) {
 }
 
 // ==================== 5. 设置配置面板视图 (Apple Liquid Glass Controls) ====================
+
+function SettingsActionButton({
+  label,
+  action,
+  accessibilityLabel
+}: {
+  label: string
+  action: () => void
+  accessibilityLabel: string
+}) {
+  return (
+    <Button action={action} buttonStyle="plain" accessibilityLabel={accessibilityLabel}>
+      <HStack spacing={3} padding={{ horizontal: 8, vertical: 6 }} alignment="center">
+        <Text font="caption1" bold foregroundStyle="systemBlue">
+          {label}
+        </Text>
+        <Image systemName="chevron.right" font={10} foregroundStyle="systemBlue" />
+      </HStack>
+    </Button>
+  )
+}
 
 function SettingsView({
   currentConfig,
@@ -516,7 +548,11 @@ function SettingsView({
       setErrorNotice("请填写完整的 AccessKey ID、Secret 与 ECS 实例 ID！")
       return
     }
-    const numThreshold = parseFloat(threshold) || 180
+    const numThreshold = Number(threshold)
+    if (!Number.isFinite(numThreshold) || numThreshold <= 0) {
+      setErrorNotice("流量阈值必须是大于 0 的数字。")
+      return
+    }
     const newCfg: AppConfig = {
       accessKeyId: ak.trim(),
       accessKeySecret: sk.trim(),
@@ -534,7 +570,7 @@ function SettingsView({
     <ScrollView background="systemGray6" showsIndicators={false}>
       <VStack
         alignment="leading"
-        spacing={16}
+        spacing={12}
         padding={{ horizontal: 16, top: 12, bottom: 40 }}
       >
         {/* 顶部导航标题栏 */}
@@ -615,7 +651,7 @@ function SettingsView({
           shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
           spacing={0}
         >
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
               background="rgba(0, 122, 255, 0.10)"
@@ -664,7 +700,7 @@ function SettingsView({
           spacing={0}
         >
           {/* AccessKey ID */}
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
               background="rgba(255, 149, 0, 0.10)"
@@ -680,30 +716,19 @@ function SettingsView({
                 {ak ? ak : "轻点右侧设置 >"}
               </Text>
             </VStack>
-            <Button
+            <SettingsActionButton
+              label={ak ? "修改" : "设置"}
+              accessibilityLabel="设置 AccessKey ID"
               action={() =>
                 promptField("设置 AccessKey ID", "请输入阿里云 AccessKey ID (LTAI 开头)", ak, "LTAI5xxxxxxxxxxx", setAk)
               }
-              buttonStyle="plain"
-            >
-              <HStack
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                {...liquidGlass(true)}
-              >
-                <Text font="caption1" bold foregroundStyle="systemBlue">
-                  {ak ? "修改" : "输入"}
-                </Text>
-              </HStack>
-            </Button>
+            />
           </HStack>
 
           <Divider padding={{ leading: 64 }} />
 
           {/* AccessKey Secret */}
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
               background="rgba(255, 59, 48, 0.10)"
@@ -716,27 +741,16 @@ function SettingsView({
                 AccessKey Secret
               </Text>
               <Text font="caption2" foregroundStyle={sk ? "systemGreen" : "systemBlue"} lineLimit={1}>
-                {sk ? "••••••••••••••••••••••••••••" : "轻点右侧设置 >"}
+                {sk ? "已设置" : "轻点右侧设置"}
               </Text>
             </VStack>
-            <Button
+            <SettingsActionButton
+              label={sk ? "修改" : "设置"}
+              accessibilityLabel="设置 AccessKey Secret"
               action={() =>
                 promptField("设置 AccessKey Secret", "请输入阿里云 AccessKey Secret", sk, "您的 Secret Key", setSk)
               }
-              buttonStyle="plain"
-            >
-              <HStack
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                {...liquidGlass(true)}
-              >
-                <Text font="caption1" bold foregroundStyle="systemBlue">
-                  {sk ? "修改" : "输入"}
-                </Text>
-              </HStack>
-            </Button>
+            />
           </HStack>
         </VStack>
         <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
@@ -756,7 +770,7 @@ function SettingsView({
           spacing={0}
         >
           {/* ECS 实例 ID */}
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
               background="rgba(52, 199, 89, 0.10)"
@@ -772,30 +786,19 @@ function SettingsView({
                 {ecsId ? ecsId : "未设置 (如 i-j6c...)"}
               </Text>
             </VStack>
-            <Button
+            <SettingsActionButton
+              label={ecsId ? "修改" : "设置"}
+              accessibilityLabel="设置 ECS 实例 ID"
               action={() =>
                 promptField("设置 ECS 实例 ID", "请输入您要控制的 ECS 实例 ID", ecsId, "i-xxxxxxxxxxxx", setEcsId)
               }
-              buttonStyle="plain"
-            >
-              <HStack
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                {...liquidGlass(true)}
-              >
-                <Text font="caption1" bold foregroundStyle="systemBlue">
-                  {ecsId ? "修改" : "输入"}
-                </Text>
-              </HStack>
-            </Button>
+            />
           </HStack>
 
           <Divider padding={{ leading: 64 }} />
 
           {/* ECS 地域 */}
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
               background="rgba(88, 86, 214, 0.10)"
@@ -811,24 +814,13 @@ function SettingsView({
                 {region || "cn-hongkong"}
               </Text>
             </VStack>
-            <Button
+            <SettingsActionButton
+              label="修改"
+              accessibilityLabel="设置 ECS 地域"
               action={() =>
                 promptField("设置 ECS 地域", "如 cn-hongkong, cn-hangzhou, cn-shanghai, ap-southeast-1 等", region, "cn-hongkong", setRegion)
               }
-              buttonStyle="plain"
-            >
-              <HStack
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                {...liquidGlass(true)}
-              >
-                <Text font="caption1" bold foregroundStyle="systemBlue">
-                  修改
-                </Text>
-              </HStack>
-            </Button>
+            />
           </HStack>
         </VStack>
         <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
@@ -864,24 +856,13 @@ function SettingsView({
                 {threshold || "180"} GB / 月
               </Text>
             </VStack>
-            <Button
+            <SettingsActionButton
+              label="修改"
+              accessibilityLabel="设置 CDT 流量警戒阈值"
               action={() =>
                 promptField("设置 CDT 流量警戒阈值 (GB)", "输入当月出网流量警戒值", threshold, "180", setThreshold)
               }
-              buttonStyle="plain"
-            >
-              <HStack
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                {...liquidGlass(true)}
-              >
-                <Text font="caption1" bold foregroundStyle="systemBlue">
-                  修改
-                </Text>
-              </HStack>
-            </Button>
+            />
           </HStack>
 
           <Divider padding={{ leading: 64 }} />
@@ -917,6 +898,7 @@ function SettingsView({
         <Button
           action={handleSave}
           buttonStyle="plain"
+          accessibilityLabel="保存配置并返回控制台"
           frame={{ maxWidth: Infinity, height: 50 }}
         >
           <HStack
@@ -931,7 +913,7 @@ function SettingsView({
           >
             <Image systemName="checkmark.circle.fill" font={17} foregroundStyle="#FFFFFF" />
             <Text font="headline" bold foregroundStyle="#FFFFFF">
-              保存配置并返回控制台
+              保存并返回
             </Text>
           </HStack>
         </Button>
@@ -953,7 +935,7 @@ function ConsoleView() {
 
   const appendLog = (msg: string) => {
     const time = new Date().toLocaleTimeString()
-    setLogs(prev => [`[${time}] ${msg}`, ...prev.slice(0, 8)])
+    setLogs(prev => [`[${time}] ${msg}`, ...prev.slice(0, 7)])
   }
 
   const loadData = useCallback(
@@ -973,7 +955,7 @@ function ConsoleView() {
       } catch (err: any) {
         const msg = err?.message || "网络请求失败，请检查配置"
         setErrorMessage(msg)
-        appendLog(`❌ 错误: ${msg}`)
+        appendLog(`错误: ${msg}`)
       } finally {
         setLoading(false)
       }
@@ -993,12 +975,12 @@ function ConsoleView() {
     appendLog(`正在执行 ${actionName} 指令...`)
     try {
       await executeECSAction(type, config)
-      appendLog(`✅ ${actionName} 请求已发送，正在同步最新状态...`)
+      appendLog(`${actionName} 请求已发送，正在同步最新状态...`)
       await loadData(config)
     } catch (err: any) {
       const msg = err?.message || "操作失败"
       setErrorMessage(msg)
-      appendLog(`❌ ${actionName} 失败: ${msg}`)
+      appendLog(`${actionName} 失败: ${msg}`)
     } finally {
       setActionLoading(false)
     }
@@ -1046,6 +1028,20 @@ function ConsoleView() {
   }
 
   const isRunning = data?.ecsStatus === "Running"
+  const statusLabel = loading && !data
+    ? "同步中"
+    : data?.ecsStatus === "Stopped"
+      ? "已停止"
+      : data?.ecsStatus || (errorMessage ? "同步失败" : "等待同步")
+  const publicIpLabel = loading
+    ? "获取中..."
+    : errorMessage && !data
+      ? "获取失败，点击刷新"
+      : data?.publicIp || (data ? "未绑定公网 IP" : "等待同步")
+  const publicIpColor = data?.publicIp ? "systemBlue" : errorMessage && !data ? "systemRed" : "secondaryLabel"
+  const visibleLogRows = Math.max(1, Math.min(logs.length, 5))
+  const logCardHeight = logs.length === 0 ? 72 : Math.min(160, 24 + visibleLogRows * 28)
+  const logViewportHeight = Math.max(48, logCardHeight - 24)
 
   // 2. 主控制台展示 (Apple iOS 26 Liquid Glass Architecture)
   return (
@@ -1173,8 +1169,8 @@ function ConsoleView() {
                   <Circle fill={isRunning ? "rgba(52, 199, 89, 0.28)" : "rgba(142, 142, 147, 0.25)"} frame={{ width: 12, height: 12 }} />
                   <Circle fill={isRunning ? "systemGreen" : "secondaryLabel"} frame={{ width: 6, height: 6 }} />
                 </ZStack>
-                <Text font={12} bold foregroundStyle={isRunning ? "systemGreen" : "tertiaryLabel"}>
-                  {isRunning ? "运行中" : data?.ecsStatus === "Stopped" ? "已停止" : data?.ecsStatus || "加载中"}
+                <Text font={12} bold foregroundStyle={isRunning ? "systemGreen" : "secondaryLabel"}>
+                  {isRunning ? "运行中" : statusLabel}
                 </Text>
               </HStack>
             </HStack>
@@ -1194,8 +1190,8 @@ function ConsoleView() {
                 <Text font="subheadline" bold foregroundStyle="label">
                   公网 IP 地址
                 </Text>
-                <Text font="caption2" foregroundStyle={data?.publicIp ? "systemBlue" : "secondaryLabel"}>
-                  {data?.publicIp || "未分配公网 IP"}
+                <Text font="caption2" foregroundStyle={publicIpColor} lineLimit={1}>
+                  {publicIpLabel}
                 </Text>
               </VStack>
             </HStack>
@@ -1206,16 +1202,16 @@ function ConsoleView() {
             <HStack
               spacing={12}
               padding={{ horizontal: 16, vertical: 14 }}
-              frame={{ maxWidth: "infinity", alignment: "center" }}
+              frame={{ maxWidth: Infinity, alignment: "center" }}
             >
               {/* 停止实例按钮：运行中为淡红微光液态玻璃胶囊，停止时为幽灵按钮 */}
               <Button
                 action={confirmStop}
                 disabled={!isRunning || actionLoading}
                 buttonStyle="plain"
+                accessibilityLabel={actionLoading ? "正在停止实例" : "停止实例"}
                 frame={{
-                  minWidth: 132,
-                  maxWidth: "infinity",
+                  maxWidth: Infinity,
                   minHeight: 44,
                   idealHeight: 44,
                   alignment: "center"
@@ -1225,17 +1221,16 @@ function ConsoleView() {
                   spacing={7}
                   alignment="center"
                   frame={{
-                    minWidth: 132,
-                    maxWidth: "infinity",
+                    maxWidth: Infinity,
                     minHeight: 44,
                     idealHeight: 44,
                     alignment: "center"
                   }}
-                  background={isRunning && !actionLoading ? "rgba(255, 59, 48, 0.09)" : "transparent"}
+                  background={isRunning && !actionLoading ? "rgba(255, 59, 48, 0.09)" : "systemGray6"}
                   border={
                     isRunning && !actionLoading
                       ? { style: "rgba(255, 59, 48, 0.25)", width: 0.75 }
-                      : undefined
+                      : { style: "systemGray4", width: 0.75 }
                   }
                   clipShape={{ type: "capsule" }}
                   shadow={
@@ -1249,14 +1244,14 @@ function ConsoleView() {
                     systemName="power"
                     font={15}
                     fontWeight="bold"
-                    foregroundStyle={isRunning && !actionLoading ? "systemRed" : "tertiaryLabel"}
+                    foregroundStyle={isRunning && !actionLoading ? "systemRed" : "secondaryLabel"}
                   />
                   <Text
-                    font="subheadline"
+                    font={14}
                     bold={isRunning && !actionLoading}
-                    foregroundStyle={isRunning && !actionLoading ? "systemRed" : "tertiaryLabel"}
+                    foregroundStyle={isRunning && !actionLoading ? "systemRed" : "secondaryLabel"}
                     lineLimit={1}
-                    minScaleFactor={0.78}
+                    minScaleFactor={0.9}
                     allowsTightening={true}
                   >
                     {actionLoading ? "处理中..." : "停止实例"}
@@ -1269,9 +1264,9 @@ function ConsoleView() {
                 action={() => handleAction("start")}
                 disabled={isRunning || actionLoading}
                 buttonStyle="plain"
+                accessibilityLabel={actionLoading ? "正在启动实例" : "启动实例"}
                 frame={{
-                  minWidth: 132,
-                  maxWidth: "infinity",
+                  maxWidth: Infinity,
                   minHeight: 44,
                   idealHeight: 44,
                   alignment: "center"
@@ -1281,17 +1276,16 @@ function ConsoleView() {
                   spacing={7}
                   alignment="center"
                   frame={{
-                    minWidth: 132,
-                    maxWidth: "infinity",
+                    maxWidth: Infinity,
                     minHeight: 44,
                     idealHeight: 44,
                     alignment: "center"
                   }}
-                  background={!isRunning && !actionLoading ? "rgba(52, 199, 89, 0.12)" : "transparent"}
+                  background={!isRunning && !actionLoading ? "rgba(52, 199, 89, 0.12)" : "systemGray6"}
                   border={
                     !isRunning && !actionLoading
                       ? { style: "rgba(52, 199, 89, 0.28)", width: 0.75 }
-                      : undefined
+                      : { style: "systemGray4", width: 0.75 }
                   }
                   clipShape={{ type: "capsule" }}
                   shadow={
@@ -1305,14 +1299,14 @@ function ConsoleView() {
                     systemName="play"
                     font={14}
                     fontWeight="bold"
-                    foregroundStyle={!isRunning && !actionLoading ? "systemGreen" : "tertiaryLabel"}
+                    foregroundStyle={!isRunning && !actionLoading ? "systemGreen" : "secondaryLabel"}
                   />
                   <Text
-                    font="subheadline"
+                    font={14}
                     bold={!isRunning && !actionLoading}
-                    foregroundStyle={!isRunning && !actionLoading ? "systemGreen" : "tertiaryLabel"}
+                    foregroundStyle={!isRunning && !actionLoading ? "systemGreen" : "secondaryLabel"}
                     lineLimit={1}
-                    minScaleFactor={0.78}
+                    minScaleFactor={0.9}
                     allowsTightening={true}
                   >
                     {actionLoading ? "处理中..." : "启动实例"}
@@ -1386,13 +1380,16 @@ function ConsoleView() {
               )}
             </HStack>
 
-            {/* 加粗圆角进度条 (高度 8px，左右内边距对齐) */}
+            {/* 线性进度条保持胶囊形状，浅色与深色都保留足够对比度 */}
             {data && (
               <VStack padding={{ horizontal: 16, top: 2, bottom: 16 }}>
                 <ProgressView
+                  progressViewStyle="linear"
                   value={Math.max(0.01, Math.min(1.0, data.percentage / 100))}
+                  total={1}
                   tint={data.color as any}
-                  frame={{ height: 8 }}
+                  frame={{ maxWidth: Infinity, height: 10 }}
+                  clipShape={{ type: "capsule" }}
                 />
               </VStack>
             )}
@@ -1504,41 +1501,47 @@ function ConsoleView() {
             </Button>
           </HStack>
 
-          {/* 日志容器：固定高度，内部滚动并限制长行 */}
+          {/* 日志容器：少量内容收缩，超过五行才使用固定视口滚动 */}
           <VStack
             background="systemBackground"
             clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
             shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
             spacing={0}
             padding={{ horizontal: 16, vertical: 12 }}
-            frame={{ maxWidth: Infinity, height: 156, alignment: "leading" }}
+            frame={{ maxWidth: Infinity, height: logCardHeight, alignment: "leading" }}
           >
-            <ScrollView showsIndicators={false} frame={{ maxWidth: Infinity, height: 132 }}>
-              <VStack alignment="leading" spacing={6} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+            <ScrollView showsIndicators={false} frame={{ maxWidth: Infinity, height: logViewportHeight }}>
+              <VStack alignment="leading" spacing={7} frame={{ maxWidth: Infinity, alignment: "leading" }}>
                 {logs.length > 0 ? (
-                  logs.map((log, index) => (
-                    <HStack key={index} spacing={6} alignment="top" frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                      <Text font={11} foregroundStyle="secondaryLabel">•</Text>
-                      <Text
-                        font={11}
-                        foregroundStyle="tertiaryLabel"
-                        lineLimit={2}
-                        frame={{ maxWidth: Infinity, alignment: "leading" }}
-                      >
-                        {log}
-                      </Text>
-                    </HStack>
-                  ))
+                  logs.map((log, index) => {
+                    const parts = splitLogLine(log)
+                    return (
+                      <HStack key={index} spacing={6} alignment="top" frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                        <Text font={11} foregroundStyle="tertiaryLabel">•</Text>
+                        <Text font={11} foregroundStyle="tertiaryLabel">
+                          {parts.time}
+                        </Text>
+                        <Text
+                          font={12}
+                          foregroundStyle={logMessageColor(log)}
+                          lineLimit={2}
+                          frame={{ maxWidth: Infinity, alignment: "leading" }}
+                        >
+                          {parts.message}
+                        </Text>
+                      </HStack>
+                    )
+                  })
                 ) : (
-                  <Text font={11} foregroundStyle="secondaryLabel">
-                    暂无日志，轻点右上角刷新同步。
+                  <Text font={12} foregroundStyle="secondaryLabel">
+                    暂无日志，点击刷新同步。
                   </Text>
                 )}
               </VStack>
             </ScrollView>
           </VStack>
-          <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 20 }}>
-            显示最近 8 条控制台指令与 OpenAPI 响应状态。
+          <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 12 }}>
+            最近 8 条操作记录
           </Text>
         </VStack>
       </ScrollView>

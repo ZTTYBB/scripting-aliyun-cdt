@@ -1035,6 +1035,27 @@ function liquidGlass(interactive: boolean = true) {
 
 // ==================== 6. 设置配置面板视图 (Apple Liquid Glass Controls) ====================
 
+function SettingsActionButton({
+  label,
+  action,
+  accessibilityLabel
+}: {
+  label: string
+  action: () => void
+  accessibilityLabel: string
+}) {
+  return (
+    <Button action={action} buttonStyle="plain" accessibilityLabel={accessibilityLabel}>
+      <HStack spacing={3} padding={{ horizontal: 8, vertical: 6 }} alignment="center">
+        <Text font="caption1" bold foregroundStyle="systemBlue">
+          {label}
+        </Text>
+        <Image systemName="chevron.right" font={10} foregroundStyle="systemBlue" />
+      </HStack>
+    </Button>
+  )
+}
+
 function SettingsComponent({
   currentConfig,
   onSave,
@@ -1152,7 +1173,11 @@ function SettingsComponent({
       setErrorNotice("请填写完整的 AccessKey ID、Secret 与 ECS 实例 ID！")
       return
     }
-    const numThreshold = parseFloat(threshold) || 180
+    const numThreshold = Number(threshold)
+    if (!Number.isFinite(numThreshold) || numThreshold <= 0) {
+      setErrorNotice("流量阈值必须是大于 0 的数字。")
+      return
+    }
     const newCfg: AppConfig = {
       accessKeyId: ak.trim(),
       accessKeySecret: sk.trim(),
@@ -1170,7 +1195,7 @@ function SettingsComponent({
     <ScrollView background="systemGray6" showsIndicators={false}>
       <VStack
         alignment="leading"
-        spacing={16}
+        spacing={12}
         padding={{ horizontal: 16, top: 12, bottom: 40 }}
       >
         {/* 顶部导航标题栏 */}
@@ -1251,7 +1276,7 @@ function SettingsComponent({
           shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
           spacing={0}
         >
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
               background="rgba(0, 122, 255, 0.10)"
@@ -1300,7 +1325,7 @@ function SettingsComponent({
           spacing={0}
         >
           {/* AccessKey ID */}
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
               background="rgba(255, 149, 0, 0.10)"
@@ -1316,30 +1341,19 @@ function SettingsComponent({
                 {ak ? ak : "轻点右侧设置 >"}
               </Text>
             </VStack>
-            <Button
+            <SettingsActionButton
+              label={ak ? "修改" : "设置"}
+              accessibilityLabel="设置 AccessKey ID"
               action={() =>
                 promptField("设置 AccessKey ID", "请输入阿里云 AccessKey ID (LTAI 开头)", ak, "LTAI5xxxxxxxxxxx", setAk)
               }
-              buttonStyle="plain"
-            >
-              <HStack
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                {...liquidGlass(true)}
-              >
-                <Text font="caption1" bold foregroundStyle="systemBlue">
-                  {ak ? "修改" : "输入"}
-                </Text>
-              </HStack>
-            </Button>
+            />
           </HStack>
 
           <Divider padding={{ leading: 64 }} />
 
           {/* AccessKey Secret */}
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
               background="rgba(255, 59, 48, 0.10)"
@@ -1352,27 +1366,16 @@ function SettingsComponent({
                 AccessKey Secret
               </Text>
               <Text font="caption2" foregroundStyle={sk ? "systemGreen" : "systemBlue"} lineLimit={1}>
-                {sk ? "••••••••••••••••••••••••••••" : "轻点右侧设置 >"}
+                {sk ? "已设置" : "轻点右侧设置"}
               </Text>
             </VStack>
-            <Button
+            <SettingsActionButton
+              label={sk ? "修改" : "设置"}
+              accessibilityLabel="设置 AccessKey Secret"
               action={() =>
                 promptField("设置 AccessKey Secret", "请输入阿里云 AccessKey Secret", sk, "您的 Secret Key", setSk)
               }
-              buttonStyle="plain"
-            >
-              <HStack
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                {...liquidGlass(true)}
-              >
-                <Text font="caption1" bold foregroundStyle="systemBlue">
-                  {sk ? "修改" : "输入"}
-                </Text>
-              </HStack>
-            </Button>
+            />
           </HStack>
         </VStack>
         <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
@@ -1392,7 +1395,7 @@ function SettingsComponent({
           spacing={0}
         >
           {/* ECS 实例 ID */}
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
               background="rgba(52, 199, 89, 0.10)"
@@ -1408,30 +1411,19 @@ function SettingsComponent({
                 {ecsId ? ecsId : "未设置 (如 i-j6c...)"}
               </Text>
             </VStack>
-            <Button
+            <SettingsActionButton
+              label={ecsId ? "修改" : "设置"}
+              accessibilityLabel="设置 ECS 实例 ID"
               action={() =>
                 promptField("设置 ECS 实例 ID", "请输入您要控制的 ECS 实例 ID", ecsId, "i-xxxxxxxxxxxx", setEcsId)
               }
-              buttonStyle="plain"
-            >
-              <HStack
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                {...liquidGlass(true)}
-              >
-                <Text font="caption1" bold foregroundStyle="systemBlue">
-                  {ecsId ? "修改" : "输入"}
-                </Text>
-              </HStack>
-            </Button>
+            />
           </HStack>
 
           <Divider padding={{ leading: 64 }} />
 
           {/* ECS 地域 */}
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
               background="rgba(88, 86, 214, 0.10)"
@@ -1447,24 +1439,13 @@ function SettingsComponent({
                 {region || "cn-hongkong"}
               </Text>
             </VStack>
-            <Button
+            <SettingsActionButton
+              label="修改"
+              accessibilityLabel="设置 ECS 地域"
               action={() =>
                 promptField("设置 ECS 地域", "如 cn-hongkong, cn-hangzhou, cn-shanghai, ap-southeast-1 等", region, "cn-hongkong", setRegion)
               }
-              buttonStyle="plain"
-            >
-              <HStack
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                {...liquidGlass(true)}
-              >
-                <Text font="caption1" bold foregroundStyle="systemBlue">
-                  修改
-                </Text>
-              </HStack>
-            </Button>
+            />
           </HStack>
         </VStack>
         <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
@@ -1484,7 +1465,7 @@ function SettingsComponent({
           spacing={0}
         >
           {/* CDT 警戒阈值 */}
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
               background="rgba(175, 82, 222, 0.10)"
@@ -1500,24 +1481,13 @@ function SettingsComponent({
                 {threshold || "180"} GB / 月
               </Text>
             </VStack>
-            <Button
+            <SettingsActionButton
+              label="修改"
+              accessibilityLabel="设置 CDT 流量警戒阈值"
               action={() =>
                 promptField("设置 CDT 流量警戒阈值 (GB)", "输入当月出网流量警戒值", threshold, "180", setThreshold)
               }
-              buttonStyle="plain"
-            >
-              <HStack
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.22)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                {...liquidGlass(true)}
-              >
-                <Text font="caption1" bold foregroundStyle="systemBlue">
-                  修改
-                </Text>
-              </HStack>
-            </Button>
+            />
           </HStack>
 
           <Divider padding={{ leading: 64 }} />
@@ -1553,6 +1523,7 @@ function SettingsComponent({
         <Button
           action={handleSave}
           buttonStyle="plain"
+          accessibilityLabel="保存配置并返回控制台"
           frame={{ maxWidth: Infinity, height: 50 }}
         >
           <HStack
@@ -1567,7 +1538,7 @@ function SettingsComponent({
           >
             <Image systemName="checkmark.circle.fill" font={17} foregroundStyle="#FFFFFF" />
             <Text font="headline" bold foregroundStyle="#FFFFFF">
-              保存配置并返回控制台
+              保存并返回
             </Text>
           </HStack>
         </Button>
@@ -1663,6 +1634,17 @@ function AppDashboard() {
   }
 
   const isRunning = data?.ecsStatus === "Running"
+  const statusLabel = loading && !data
+    ? "同步中"
+    : data?.ecsStatus === "Stopped"
+      ? "已停止"
+      : data?.ecsStatus || (errorMsg ? "同步失败" : "等待同步")
+  const publicIpLabel = loading
+    ? "获取中..."
+    : errorMsg && !data
+      ? "获取失败，点击刷新"
+      : data?.publicIp || (data ? "未绑定公网 IP" : "等待同步")
+  const publicIpColor = data?.publicIp ? "systemBlue" : errorMsg && !data ? "systemRed" : "secondaryLabel"
 
   return (
     <NavigationStack>
@@ -1789,8 +1771,8 @@ function AppDashboard() {
                   <Circle fill={isRunning ? "rgba(52, 199, 89, 0.28)" : "rgba(142, 142, 147, 0.25)"} frame={{ width: 12, height: 12 }} />
                   <Circle fill={isRunning ? "systemGreen" : "secondaryLabel"} frame={{ width: 6, height: 6 }} />
                 </ZStack>
-                <Text font={12} bold foregroundStyle={isRunning ? "systemGreen" : "tertiaryLabel"}>
-                  {isRunning ? "运行中" : data?.ecsStatus === "Stopped" ? "已停止" : data?.ecsStatus || "加载中"}
+                <Text font={12} bold foregroundStyle={isRunning ? "systemGreen" : "secondaryLabel"}>
+                  {isRunning ? "运行中" : statusLabel}
                 </Text>
               </HStack>
             </HStack>
@@ -1810,8 +1792,8 @@ function AppDashboard() {
                 <Text font="subheadline" bold foregroundStyle="label">
                   公网 IP 地址
                 </Text>
-                <Text font="caption2" foregroundStyle={data?.publicIp ? "systemBlue" : "secondaryLabel"}>
-                  {data?.publicIp || "未分配公网 IP"}
+                <Text font="caption2" foregroundStyle={publicIpColor} lineLimit={1}>
+                  {publicIpLabel}
                 </Text>
               </VStack>
             </HStack>
@@ -1822,16 +1804,16 @@ function AppDashboard() {
             <HStack
               spacing={12}
               padding={{ horizontal: 16, vertical: 14 }}
-              frame={{ maxWidth: "infinity", alignment: "center" }}
+              frame={{ maxWidth: Infinity, alignment: "center" }}
             >
               {/* 停止实例按钮：运行中为淡红微光液态玻璃胶囊，停止时为幽灵按钮 */}
               <Button
                 action={confirmStop}
                 disabled={!isRunning || btnLoading}
                 buttonStyle="plain"
+                accessibilityLabel={btnLoading ? "正在停止实例" : "停止实例"}
                 frame={{
-                  minWidth: 132,
-                  maxWidth: "infinity",
+                  maxWidth: Infinity,
                   minHeight: 44,
                   idealHeight: 44,
                   alignment: "center"
@@ -1841,17 +1823,16 @@ function AppDashboard() {
                   spacing={7}
                   alignment="center"
                   frame={{
-                    minWidth: 132,
-                    maxWidth: "infinity",
+                    maxWidth: Infinity,
                     minHeight: 44,
                     idealHeight: 44,
                     alignment: "center"
                   }}
-                  background={isRunning && !btnLoading ? "rgba(255, 59, 48, 0.09)" : "transparent"}
+                  background={isRunning && !btnLoading ? "rgba(255, 59, 48, 0.09)" : "systemGray6"}
                   border={
                     isRunning && !btnLoading
                       ? { style: "rgba(255, 59, 48, 0.25)", width: 0.75 }
-                      : undefined
+                      : { style: "systemGray4", width: 0.75 }
                   }
                   clipShape={{ type: "capsule" }}
                   shadow={
@@ -1865,14 +1846,14 @@ function AppDashboard() {
                     systemName="power"
                     font={15}
                     fontWeight="bold"
-                    foregroundStyle={isRunning && !btnLoading ? "systemRed" : "tertiaryLabel"}
+                    foregroundStyle={isRunning && !btnLoading ? "systemRed" : "secondaryLabel"}
                   />
                   <Text
-                    font="subheadline"
+                    font={14}
                     bold={isRunning && !btnLoading}
-                    foregroundStyle={isRunning && !btnLoading ? "systemRed" : "tertiaryLabel"}
+                    foregroundStyle={isRunning && !btnLoading ? "systemRed" : "secondaryLabel"}
                     lineLimit={1}
-                    minScaleFactor={0.78}
+                    minScaleFactor={0.9}
                     allowsTightening={true}
                   >
                     {btnLoading ? "处理中..." : "停止实例"}
@@ -1885,9 +1866,9 @@ function AppDashboard() {
                 action={() => handleToggle("start")}
                 disabled={isRunning || btnLoading}
                 buttonStyle="plain"
+                accessibilityLabel={btnLoading ? "正在启动实例" : "启动实例"}
                 frame={{
-                  minWidth: 132,
-                  maxWidth: "infinity",
+                  maxWidth: Infinity,
                   minHeight: 44,
                   idealHeight: 44,
                   alignment: "center"
@@ -1897,17 +1878,16 @@ function AppDashboard() {
                   spacing={7}
                   alignment="center"
                   frame={{
-                    minWidth: 132,
-                    maxWidth: "infinity",
+                    maxWidth: Infinity,
                     minHeight: 44,
                     idealHeight: 44,
                     alignment: "center"
                   }}
-                  background={!isRunning && !btnLoading ? "rgba(52, 199, 89, 0.12)" : "transparent"}
+                  background={!isRunning && !btnLoading ? "rgba(52, 199, 89, 0.12)" : "systemGray6"}
                   border={
                     !isRunning && !btnLoading
                       ? { style: "rgba(52, 199, 89, 0.28)", width: 0.75 }
-                      : undefined
+                      : { style: "systemGray4", width: 0.75 }
                   }
                   clipShape={{ type: "capsule" }}
                   shadow={
@@ -1921,14 +1901,14 @@ function AppDashboard() {
                     systemName="play"
                     font={14}
                     fontWeight="bold"
-                    foregroundStyle={!isRunning && !btnLoading ? "systemGreen" : "tertiaryLabel"}
+                    foregroundStyle={!isRunning && !btnLoading ? "systemGreen" : "secondaryLabel"}
                   />
                   <Text
-                    font="subheadline"
+                    font={14}
                     bold={!isRunning && !btnLoading}
-                    foregroundStyle={!isRunning && !btnLoading ? "systemGreen" : "tertiaryLabel"}
+                    foregroundStyle={!isRunning && !btnLoading ? "systemGreen" : "secondaryLabel"}
                     lineLimit={1}
-                    minScaleFactor={0.78}
+                    minScaleFactor={0.9}
                     allowsTightening={true}
                   >
                     {btnLoading ? "处理中..." : "启动实例"}
@@ -2002,13 +1982,16 @@ function AppDashboard() {
               )}
             </HStack>
 
-            {/* 加粗圆角进度条 (高度 8px，左右内边距对齐) */}
+            {/* 线性进度条保持胶囊形状，浅色与深色都保留足够对比度 */}
             {data && (
               <VStack padding={{ horizontal: 16, top: 2, bottom: 16 }}>
                 <ProgressView
+                  progressViewStyle="linear"
                   value={Math.max(0.01, Math.min(1.0, data.percentage / 100))}
+                  total={1}
                   tint={data.color as any}
-                  frame={{ height: 8 }}
+                  frame={{ maxWidth: Infinity, height: 10 }}
+                  clipShape={{ type: "capsule" }}
                 />
               </VStack>
             )}
