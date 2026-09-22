@@ -8,9 +8,9 @@
   "color": "rgba(10, 132, 255, 1.00)",
   "version": "1.5.0",
   "runInApp": true,
-  "description": "阿里云 CDT 公网出网流量监控与 ECS 实例远程智能控制台。",
+  "description": "阿里云 CDT 免费公网流量监控、抢占式折后账单对账与 ECS 状态看板（VPS托管纯统计版）。",
   "localizedDescriptions": {
-    "zh": "阿里云 CDT 公网出网流量监控与 ECS 实例远程智能控制台。",
-    "en": "Alibaba Cloud CDT Traffic Monitor & ECS Smart Controller."
+    "zh": "阿里云 CDT 免费公网流量监控、抢占式折后账单对账与 ECS 状态看板（VPS托管纯统计版）。",
+    "en": "Alibaba Cloud CDT Traffic Monitor, Spot Billing & ECS Status Dashboard."
   }
 }
