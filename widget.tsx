@@ -417,7 +417,7 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
     : null
   const todayEstimatedGB = dailyUsage[dailyUsage.length - 1]?.valueGB ?? null
 
-  const color = percentage >= 90 ? "#FF453A" : percentage >= 70 ? "#FF9F0A" : "#30D158"
+  const color = percentage >= 90 ? "systemRed" : percentage >= 70 ? "systemOrange" : "systemGreen"
 
   return {
     totalGB,
@@ -447,15 +447,15 @@ type ECSStatusMeta = {
 function getECSStatusMeta(status: WidgetData["ecsStatus"]): ECSStatusMeta {
   switch (status) {
     case "Running":
-      return { label: "运行中", shortLabel: "运行", color: "#30D158" }
+      return { label: "运行中", shortLabel: "运行", color: "systemGreen" }
     case "Starting":
-      return { label: "启动中", shortLabel: "启动中", color: "#FF9F0A" }
+      return { label: "启动中", shortLabel: "启动中", color: "systemOrange" }
     case "Stopping":
-      return { label: "停止中", shortLabel: "停止中", color: "#FF9F0A" }
+      return { label: "停止中", shortLabel: "停止中", color: "systemOrange" }
     case "Stopped":
-      return { label: "已停止", shortLabel: "停止", color: "#8E8E93" }
+      return { label: "已停止", shortLabel: "停止", color: "secondaryLabel" }
     default:
-      return { label: "状态未知", shortLabel: "未知", color: "#8E8E93" }
+      return { label: "状态未知", shortLabel: "未知", color: "secondaryLabel" }
   }
 }
 
@@ -512,12 +512,12 @@ function TrafficRing({
           {value}
         </Text>
         {caption && (
-          <Text font={captionFont || 9} lineLimit={1} foregroundColor="#8E8E93">
+          <Text font={captionFont || 9} lineLimit={1} foregroundStyle="secondaryLabel">
             {caption}
           </Text>
         )}
         {subcaption && (
-          <Text font={Math.max(7, (captionFont || 9) - 1)} lineLimit={1} foregroundColor="#8E8E93">
+          <Text font={Math.max(7, (captionFont || 9) - 1)} lineLimit={1} foregroundStyle="secondaryLabel">
             {subcaption}
           </Text>
         )}
@@ -561,7 +561,7 @@ function DailyBars({
           ? 0
           : Math.max(7, Math.round((point.valueGB / maximum) * chartHeight))
         const label = point.isToday ? "今天" : fullWeekday ? `周${point.label}` : point.label
-        const fillColor = point.isToday ? "#0A84FF" : "#30D158"
+        const fillColor = point.isToday ? "systemBlue" : "systemGreen"
 
         return (
           <VStack key={point.date} spacing={3} alignment="center" frame={{ maxWidth: Infinity }}>
@@ -572,7 +572,7 @@ function DailyBars({
                 monospacedDigit
                 lineLimit={1}
                 minScaleFactor={0.72}
-                foregroundColor={point.isToday ? "#0A84FF" : "#8E8E93"}
+                foregroundStyle={point.isToday ? "systemBlue" : "secondaryLabel"}
               >
                 {formatEstimate(point.valueGB, fullWeekday ? 2 : 1)}
               </Text>
@@ -596,7 +596,7 @@ function DailyBars({
               font={8}
               bold={point.isToday}
               lineLimit={1}
-              foregroundColor={point.isToday ? "#0A84FF" : "#8E8E93"}
+              foregroundStyle={point.isToday ? "systemBlue" : "secondaryLabel"}
             >
               {label}
             </Text>
@@ -619,15 +619,15 @@ function NotConfiguredWidgetView() {
     >
       <HStack spacing={6} alignment="center">
         <Image systemName="gearshape.fill" font={14} foregroundStyle="systemOrange" />
-        <Text font="subheadline" bold foregroundColor="#FF9F0A">
+        <Text font="subheadline" bold foregroundStyle="systemOrange">
           尚未配置
         </Text>
       </HStack>
-      <Text font="caption2" foregroundColor="#8E8E93">
+      <Text font="caption2" foregroundStyle="secondaryLabel">
         请在 Scripting 中点开此脚本，填入阿里云 AK/SK 与 ECS 实例信息。
       </Text>
       <Spacer />
-      <Text font="caption2" bold foregroundColor="#0A84FF">
+      <Text font="caption2" bold foregroundStyle="systemBlue">
         轻点进入配置 &gt;
       </Text>
     </VStack>
@@ -656,7 +656,7 @@ function SmallWidgetView({ data }: { data: WidgetData }) {
         <Spacer />
         <HStack spacing={4} alignment="center">
           <Circle widgetAccentable fill={status.color} frame={{ width: 6, height: 6 }} />
-          <Text font="caption2" bold lineLimit={1} foregroundColor={status.color}>
+          <Text font="caption2" bold lineLimit={1} foregroundStyle={status.color}>
             {status.shortLabel}
           </Text>
         </HStack>
@@ -679,19 +679,19 @@ function SmallWidgetView({ data }: { data: WidgetData }) {
 
       <HStack spacing={4} alignment="top" frame={{ maxWidth: Infinity }}>
         <VStack alignment="leading" spacing={1} frame={{ maxWidth: Infinity }}>
-          <Text font={8} lineLimit={1} foregroundColor="#8E8E93">今日估算</Text>
+          <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel">今日估算</Text>
           <Text font={9} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} allowsTightening={true} foregroundStyle="label">
             {formatEstimate(data.todayEstimatedGB)} GB
           </Text>
         </VStack>
         <VStack alignment="center" spacing={1} frame={{ maxWidth: Infinity }}>
-          <Text font={8} lineLimit={1} foregroundColor="#8E8E93">日均可用</Text>
+          <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel">日均可用</Text>
           <Text font={9} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} allowsTightening={true} foregroundStyle="label">
             {data.dailyBudgetGB} GB
           </Text>
         </VStack>
         <VStack alignment="trailing" spacing={1} frame={{ maxWidth: Infinity }}>
-          <Text font={8} lineLimit={1} foregroundColor="#8E8E93">近 7 日</Text>
+          <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel">近 7 日</Text>
           <Text font={9} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} allowsTightening={true} foregroundStyle="label">
             {formatEstimate(data.sevenDayTotalGB)} GB
           </Text>
@@ -723,7 +723,7 @@ function MediumWidgetView({ data }: { data: WidgetData }) {
         <Spacer />
         <HStack spacing={5} alignment="center">
           <Circle widgetAccentable fill={status.color} frame={{ width: 7, height: 7 }} />
-          <Text font={10} bold lineLimit={1} foregroundColor={status.color}>
+          <Text font={10} bold lineLimit={1} foregroundStyle={status.color}>
             ECS {status.label}
           </Text>
         </HStack>
@@ -744,32 +744,32 @@ function MediumWidgetView({ data }: { data: WidgetData }) {
         <VStack alignment="leading" spacing={5} frame={{ maxWidth: Infinity, alignment: "leading" }}>
           <HStack spacing={10} frame={{ maxWidth: Infinity }} alignment="top">
             <VStack alignment="leading" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
+              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">
                 本月剩余
               </Text>
               <HStack alignment="bottom" spacing={2}>
                 <Text font={15} bold monospacedDigit lineLimit={1} foregroundStyle="label">
                   {data.remainingGB.toFixed(2)}
                 </Text>
-                <Text font={8} lineLimit={1} foregroundColor="#8E8E93" padding={{ bottom: 1 }}>GB</Text>
+                <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel" padding={{ bottom: 1 }}>GB</Text>
               </HStack>
             </VStack>
             <Spacer />
             <VStack alignment="trailing" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
+              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">
                 日均可用
               </Text>
               <HStack alignment="bottom" spacing={2}>
                 <Text font={15} bold monospacedDigit lineLimit={1} foregroundStyle="label">
                   {data.dailyBudgetGB}
                 </Text>
-                <Text font={8} lineLimit={1} foregroundColor="#8E8E93" padding={{ bottom: 1 }}>GB/天</Text>
+                <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel" padding={{ bottom: 1 }}>GB/天</Text>
               </HStack>
             </VStack>
           </HStack>
 
           <HStack alignment="center" frame={{ maxWidth: Infinity }}>
-            <Text font={8} lineLimit={1} foregroundColor="#8E8E93">
+            <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel">
               7 日估算 · 余 {data.daysRemaining} 天
             </Text>
             <Spacer />
@@ -812,7 +812,7 @@ function LargeWidgetView({ data }: { data: WidgetData }) {
         <Spacer />
         <HStack spacing={5} alignment="center">
           <Circle widgetAccentable fill={status.color} frame={{ width: 7, height: 7 }} />
-          <Text font={10} bold lineLimit={1} foregroundColor={status.color}>ECS {status.label}</Text>
+          <Text font={10} bold lineLimit={1} foregroundStyle={status.color}>ECS {status.label}</Text>
         </HStack>
       </HStack>
 
@@ -831,14 +831,14 @@ function LargeWidgetView({ data }: { data: WidgetData }) {
         <VStack alignment="leading" spacing={9} frame={{ maxWidth: Infinity }}>
           <HStack alignment="top" frame={{ maxWidth: Infinity }}>
             <VStack alignment="leading" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">本月剩余</Text>
+              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">本月剩余</Text>
               <Text font={17} bold monospacedDigit lineLimit={1} foregroundStyle="label">
                 {data.remainingGB.toFixed(2)} GB
               </Text>
             </VStack>
             <Spacer />
             <VStack alignment="trailing" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">距结算</Text>
+              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">距结算</Text>
               <Text font={17} bold monospacedDigit lineLimit={1} foregroundStyle="label">
                 {data.daysRemaining} 天
               </Text>
@@ -847,14 +847,14 @@ function LargeWidgetView({ data }: { data: WidgetData }) {
 
           <HStack alignment="top" frame={{ maxWidth: Infinity }}>
             <VStack alignment="leading" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">今日估算</Text>
+              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">今日估算</Text>
               <Text font={14} bold monospacedDigit lineLimit={1} foregroundStyle="label">
                 {formatEstimate(data.todayEstimatedGB)} GB
               </Text>
             </VStack>
             <Spacer />
             <VStack alignment="trailing" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundColor="#8E8E93">近 7 日</Text>
+              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">近 7 日</Text>
               <Text font={14} bold monospacedDigit lineLimit={1} foregroundStyle="label">
                 {formatEstimate(data.sevenDayTotalGB)} GB
               </Text>
@@ -862,7 +862,7 @@ function LargeWidgetView({ data }: { data: WidgetData }) {
           </HStack>
 
           <HStack alignment="bottom" frame={{ maxWidth: Infinity }}>
-            <Text font={9} lineLimit={1} foregroundColor="#8E8E93">剩余日均可用</Text>
+            <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">剩余日均可用</Text>
             <Spacer />
             <Text font={15} bold monospacedDigit lineLimit={1} foregroundStyle="label">
               {data.dailyBudgetGB} GB/天
@@ -874,9 +874,9 @@ function LargeWidgetView({ data }: { data: WidgetData }) {
       <Divider />
 
       <HStack alignment="center" frame={{ maxWidth: Infinity }}>
-        <Text font={10} lineLimit={1} foregroundColor="#8E8E93">每日估算用量</Text>
+        <Text font={10} lineLimit={1} foregroundStyle="secondaryLabel">每日估算用量</Text>
         <Spacer />
-        <Text font={9} bold lineLimit={1} foregroundColor="#8E8E93">单位 GB</Text>
+        <Text font={9} bold lineLimit={1} foregroundStyle="secondaryLabel">单位 GB</Text>
       </HStack>
 
       <DailyBars
@@ -891,11 +891,11 @@ function LargeWidgetView({ data }: { data: WidgetData }) {
       <Spacer />
       <HStack alignment="center" frame={{ maxWidth: Infinity }}>
         <HStack spacing={5} alignment="center">
-          <Image systemName="clock" font={9} foregroundStyle="#FF9F0A" />
-          <Text font={9} bold lineLimit={1} foregroundColor="#C66B00">日用量为本机采样估算</Text>
+          <Image systemName="clock" font={9} foregroundStyle="systemOrange" />
+          <Text font={9} bold lineLimit={1} foregroundStyle="systemOrange">日用量为本机采样估算</Text>
         </HStack>
         <Spacer />
-        <Text font={9} monospacedDigit lineLimit={1} foregroundColor="#8E8E93">
+        <Text font={9} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
           {formatUpdateTime(data.updatedAt)} 更新
         </Text>
       </HStack>
@@ -929,12 +929,12 @@ function AccessoryRectangularView({ data }: { data: WidgetData }) {
           <Spacer />
           <HStack spacing={4} alignment="center">
             <Circle widgetAccentable fill={status.color} frame={{ width: 5, height: 5 }} />
-            <Text font={9} bold lineLimit={1} foregroundColor={status.color}>
+            <Text font={9} bold lineLimit={1} foregroundStyle={status.color}>
               {status.shortLabel}
             </Text>
           </HStack>
         </HStack>
-        <Text font={9} lineLimit={1} foregroundColor="#8E8E93">
+        <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">
           剩余 {data.remainingGB.toFixed(1)} GB · {data.daysRemaining} 天重置
         </Text>
       </VStack>
@@ -983,10 +983,10 @@ async function main() {
     console.error("小组件加载失败:", err)
     Widget.present(
       <VStack alignment="leading" spacing={4}>
-        <Text font="caption1" bold foregroundColor="#FF453A">
+        <Text font="caption1" bold foregroundStyle="systemRed">
           ⚠️ 获取失败
         </Text>
-        <Text font="caption2" foregroundColor="#8E8E93">
+        <Text font="caption2" foregroundStyle="secondaryLabel">
           {err?.message || "网络或凭据错误"}
         </Text>
       </VStack>
