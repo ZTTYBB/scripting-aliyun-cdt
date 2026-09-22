@@ -273,6 +273,41 @@ interface MonitorData {
   color: string
 }
 
+type ECSIpValue = string | string[] | undefined
+
+interface ECSInstanceRecord {
+  Status: string
+  PublicIpAddress?: { IpAddress?: ECSIpValue }
+  EipAddress?: { IpAddress?: ECSIpValue }
+  PublicIpAddresses?: ECSIpValue
+  EipAddresses?: ECSIpValue
+}
+
+function firstIp(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    return value.find(item => typeof item === "string" && item.trim().length > 0)?.trim()
+  }
+  if (typeof value !== "string") return undefined
+  const text = value.trim()
+  if (!text) return undefined
+  if (text.startsWith("[")) {
+    try {
+      return firstIp(JSON.parse(text))
+    } catch {
+      return undefined
+    }
+  }
+  return text
+}
+
+function getInstancePublicIp(instance?: ECSInstanceRecord): string | undefined {
+  // 绑定弹性公网 IP 时，DescribeInstances 将地址放在 EipAddress，而不是 PublicIpAddress。
+  return firstIp(instance?.EipAddress?.IpAddress)
+    || firstIp(instance?.PublicIpAddress?.IpAddress)
+    || firstIp(instance?.EipAddresses)
+    || firstIp(instance?.PublicIpAddresses)
+}
+
 async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
   const cdtData = await aliyunRequest<{
     TrafficDetails?: Array<{ Traffic?: number }>
@@ -287,10 +322,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
 
   const ecsData = await aliyunRequest<{
     Instances?: {
-      Instance?: Array<{
-        Status: string
-        PublicIpAddress?: { IpAddress?: string[] }
-      }>
+      Instance?: ECSInstanceRecord[]
     }
   }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
     InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
@@ -299,7 +331,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
 
   const instance = ecsData.Instances?.Instance?.[0]
   let ecsStatus = (instance?.Status as any) || "Unknown"
-  const publicIp = instance?.PublicIpAddress?.IpAddress?.[0]
+  const publicIp = getInstancePublicIp(instance)
 
   if (config.autoStopOnExceed && totalGB >= thresholdGB && ecsStatus === "Running") {
     await aliyunRequest(`ecs.${config.regionId}.aliyuncs.com`, "StopInstance", "2014-05-26", config, {

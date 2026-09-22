@@ -214,6 +214,43 @@ export interface ECSInstanceInfo {
   instanceName?: string
 }
 
+type ECSIpValue = string | string[] | undefined
+
+interface ECSInstanceRecord {
+  InstanceId: string
+  Status: string
+  InstanceName?: string
+  PublicIpAddress?: { IpAddress?: ECSIpValue }
+  EipAddress?: { IpAddress?: ECSIpValue }
+  PublicIpAddresses?: ECSIpValue
+  EipAddresses?: ECSIpValue
+}
+
+function firstIp(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    return value.find(item => typeof item === "string" && item.trim().length > 0)?.trim()
+  }
+  if (typeof value !== "string") return undefined
+  const text = value.trim()
+  if (!text) return undefined
+  if (text.startsWith("[")) {
+    try {
+      return firstIp(JSON.parse(text))
+    } catch {
+      return undefined
+    }
+  }
+  return text
+}
+
+function getInstancePublicIp(instance?: ECSInstanceRecord): string | undefined {
+  // 绑定弹性公网 IP 时，DescribeInstances 将地址放在 EipAddress，而不是 PublicIpAddress。
+  return firstIp(instance?.EipAddress?.IpAddress)
+    || firstIp(instance?.PublicIpAddress?.IpAddress)
+    || firstIp(instance?.EipAddresses)
+    || firstIp(instance?.PublicIpAddresses)
+}
+
 export class AliyunService {
   private config: AppConfig
 
@@ -269,12 +306,7 @@ export class AliyunService {
     const domain = `ecs.${this.config.regionId}.aliyuncs.com`
     const data = await aliyunRequest<{
       Instances?: {
-        Instance?: Array<{
-          InstanceId: string
-          Status: string
-          InstanceName?: string
-          PublicIpAddress?: { IpAddress?: string[] }
-        }>
+        Instance?: ECSInstanceRecord[]
       }
     }>(
       {
@@ -301,7 +333,7 @@ export class AliyunService {
     return {
       instanceId: instance.InstanceId,
       status: (instance.Status as ECSStatus) || "Unknown",
-      publicIp: instance.PublicIpAddress?.IpAddress?.[0],
+      publicIp: getInstancePublicIp(instance),
       instanceName: instance.InstanceName
     }
   }
