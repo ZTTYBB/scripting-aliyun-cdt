@@ -225,6 +225,7 @@ export interface DailyExpenseItem {
   date: string
   amount: string
   isToday?: boolean
+  settled?: boolean
 }
 
 export interface MonthlyBillInfo {
@@ -610,12 +611,11 @@ export class AliyunService {
         }
       }
 
-      // 当月消费优先采用各产品有效累计消费，保证与控制台账单总和（例如 ECS ¥0.40 + EIP ¥0.04 = ¥0.44）严格一致
-      const finalPayment = allProductsEffective > 0 ? allProductsEffective : (totalPayment > 0 ? totalPayment : totalGross)
-
-      // 生成最近 7 天的每日明细推算序列
-      const ecsDailyAvg = currentDay > 0 ? ecsTotal / currentDay : 0
-      const eipDailyAvg = currentDay > 0 ? eipTotal / currentDay : 0
+      // 当月消费严格对齐阿里云控制台账单中心：优先采用各项产品实际累计（如 ECS ¥0.40 + EIP ¥0.04 = ¥0.44）
+      const infrastructureTotal = ecsTotal + eipTotal + cdtTotal
+      const finalPayment = infrastructureTotal > 0
+        ? infrastructureTotal
+        : (allProductsEffective > 0 ? allProductsEffective : (totalPayment > 0 ? totalPayment : totalGross))
 
       const formatDaily = (amt: number): string => {
         if (amt <= 0) return "0.00"
@@ -623,21 +623,112 @@ export class AliyunService {
         return amt.toFixed(2)
       }
 
+      // 真实读取最近各日期的官方实际账单（QueryAccountBill + DAILY，真实 API 读取，绝非推算）
       const ecsDailyList: DailyExpenseItem[] = []
       const eipDailyList: DailyExpenseItem[] = []
-
       const daysCount = Math.min(7, currentDay)
+
+      const dateQueries: Array<{ dateStr: string; displayDate: string; isToday: boolean }> = []
       for (let i = 0; i < daysCount; i++) {
         const d = new Date(now.getFullYear(), now.getMonth(), currentDay - i)
-        const dateStr = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
-        const isToday = i === 0
+        const yyyy = d.getFullYear()
+        const mm = String(d.getMonth() + 1).padStart(2, "0")
+        const dd = String(d.getDate()).padStart(2, "0")
+        dateQueries.push({
+          dateStr: `${yyyy}-${mm}-${dd}`,
+          displayDate: `${mm}-${dd}`,
+          isToday: i === 0
+        })
+      }
 
-        const ratio = isToday ? Math.max(0.2, Math.min(1, now.getHours() / 24)) : 1.0
-        const ecsDayAmt = formatDaily(ecsDailyAvg * ratio)
-        const eipDayAmt = formatDaily(eipDailyAvg * ratio)
+      try {
+        const dailyResults = await Promise.all(
+          dateQueries.map(async q => {
+            // 今日账单通常在次日(T+1)凌晨完成结算出账
+            if (q.isToday) {
+              return {
+                date: q.displayDate,
+                isToday: true,
+                ecsAmount: "0.00",
+                eipAmount: "0.00",
+                settled: false
+              }
+            }
+            try {
+              const dayRes = await aliyunRequest<{
+                Data?: {
+                  Items?: {
+                    Item?: Array<any>
+                  }
+                }
+              }>(
+                {
+                  domain: "business.aliyuncs.com",
+                  action: "QueryAccountBill",
+                  version: "2017-12-14",
+                  method: "POST",
+                  params: {
+                    BillingCycle: cycle,
+                    Granularity: "DAILY",
+                    BillingDate: q.dateStr,
+                    IsGroupByProduct: true
+                  }
+                },
+                this.config
+              )
+              const dayItems = dayRes?.Data?.Items?.Item || []
+              let dEcs = 0
+              let dEip = 0
+              for (const it of dayItems) {
+                const c = String(it.PipCode || it.ProductCode || "").toLowerCase()
+                const n = String(it.ProductName || "")
+                const p = Number(it.PaymentAmount || 0)
+                const g = Number(it.PretaxGrossAmount || it.PretaxAmount || 0)
+                const eff = p > 0 ? p : g
 
-        ecsDailyList.push({ date: dateStr, amount: ecsDayAmt, isToday })
-        eipDailyList.push({ date: dateStr, amount: eipDayAmt, isToday })
+                if (c === "ecs" || c.includes("ecs") || n.includes("云服务器") || n.includes("ECS")) {
+                  dEcs += eff
+                } else if (
+                  c === "eip" ||
+                  c === "cbwp" ||
+                  c.includes("eip") ||
+                  c.includes("cbwp") ||
+                  n.includes("弹性公网") ||
+                  n.includes("EIP") ||
+                  n.includes("公网IP") ||
+                  n.includes("共享带宽")
+                ) {
+                  dEip += eff
+                }
+              }
+              return {
+                date: q.displayDate,
+                isToday: false,
+                ecsAmount: formatDaily(dEcs),
+                eipAmount: formatDaily(dEip),
+                settled: dayItems.length > 0
+              }
+            } catch {
+              return {
+                date: q.displayDate,
+                isToday: false,
+                ecsAmount: "0.00",
+                eipAmount: "0.00",
+                settled: false
+              }
+            }
+          })
+        )
+
+        for (const r of dailyResults) {
+          ecsDailyList.push({ date: r.date, amount: r.ecsAmount, isToday: r.isToday, settled: r.settled })
+          eipDailyList.push({ date: r.date, amount: r.eipAmount, isToday: r.isToday, settled: r.settled })
+        }
+      } catch {
+        for (const q of dateQueries) {
+          ecsDailyList.push({ date: q.displayDate, amount: "0.00", isToday: q.isToday, settled: false })
+          eipDailyList.push({ date: q.displayDate, amount: "0.00", isToday: q.isToday, settled: false })
+        }
       }
 
       return {

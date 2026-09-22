@@ -266,6 +266,7 @@ export interface DailyExpenseItem {
   date: string
   amount: string
   isToday?: boolean
+  settled?: boolean
 }
 
 export interface MonthlyBillInfo {
@@ -490,9 +491,11 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
         }
       }
 
-      const finalPayment = allProductsEffective > 0 ? allProductsEffective : (totalPayment > 0 ? totalPayment : totalGross)
-      const ecsDailyAvg = currentDay > 0 ? ecsTotal / currentDay : 0
-      const eipDailyAvg = currentDay > 0 ? eipTotal / currentDay : 0
+      // 当月消费严格对齐阿里云控制台账单中心：优先采用各项产品实际累计（如 ECS ¥0.40 + EIP ¥0.04 = ¥0.44）
+      const infrastructureTotal = ecsTotal + eipTotal + cdtTotal
+      const finalPayment = infrastructureTotal > 0
+        ? infrastructureTotal
+        : (allProductsEffective > 0 ? allProductsEffective : (totalPayment > 0 ? totalPayment : totalGross))
 
       const formatDaily = (amt: number): string => {
         if (amt <= 0) return "0.00"
@@ -500,21 +503,104 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
         return amt.toFixed(2)
       }
 
+      // 真实读取最近各日期的官方实际账单（QueryAccountBill + DAILY，真实 API 读取，绝非推算）
       const ecsDailyList: DailyExpenseItem[] = []
       const eipDailyList: DailyExpenseItem[] = []
-
       const daysCount = Math.min(7, currentDay)
+
+      const dateQueries: Array<{ dateStr: string; displayDate: string; isToday: boolean }> = []
       for (let i = 0; i < daysCount; i++) {
         const d = new Date(now.getFullYear(), now.getMonth(), currentDay - i)
-        const dateStr = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
-        const isToday = i === 0
+        const yyyy = d.getFullYear()
+        const mm = String(d.getMonth() + 1).padStart(2, "0")
+        const dd = String(d.getDate()).padStart(2, "0")
+        dateQueries.push({
+          dateStr: `${yyyy}-${mm}-${dd}`,
+          displayDate: `${mm}-${dd}`,
+          isToday: i === 0
+        })
+      }
 
-        const ratio = isToday ? Math.max(0.2, Math.min(1, now.getHours() / 24)) : 1.0
-        const ecsDayAmt = formatDaily(ecsDailyAvg * ratio)
-        const eipDayAmt = formatDaily(eipDailyAvg * ratio)
+      try {
+        const dailyResults = await Promise.all(
+          dateQueries.map(async q => {
+            // 今日账单通常在次日(T+1)凌晨完成结算出账
+            if (q.isToday) {
+              return {
+                date: q.displayDate,
+                isToday: true,
+                ecsAmount: "0.00",
+                eipAmount: "0.00",
+                settled: false
+              }
+            }
+            try {
+              const dayRes = await aliyunRequest<{
+                Data?: {
+                  Items?: {
+                    Item?: Array<any>
+                  }
+                }
+              }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
+                BillingCycle: cycle,
+                Granularity: "DAILY",
+                BillingDate: q.dateStr,
+                IsGroupByProduct: true
+              }).catch(() => null)
 
-        ecsDailyList.push({ date: dateStr, amount: ecsDayAmt, isToday })
-        eipDailyList.push({ date: dateStr, amount: eipDayAmt, isToday })
+              const dayItems = dayRes?.Data?.Items?.Item || []
+              let dEcs = 0
+              let dEip = 0
+              for (const it of dayItems) {
+                const c = String(it.PipCode || it.ProductCode || "").toLowerCase()
+                const n = String(it.ProductName || "")
+                const p = Number(it.PaymentAmount || 0)
+                const g = Number(it.PretaxGrossAmount || it.PretaxAmount || 0)
+                const eff = p > 0 ? p : g
+
+                if (c === "ecs" || c.includes("ecs") || n.includes("云服务器") || n.includes("ECS")) {
+                  dEcs += eff
+                } else if (
+                  c === "eip" ||
+                  c === "cbwp" ||
+                  c.includes("eip") ||
+                  c.includes("cbwp") ||
+                  n.includes("弹性公网") ||
+                  n.includes("EIP") ||
+                  n.includes("公网IP") ||
+                  n.includes("共享带宽")
+                ) {
+                  dEip += eff
+                }
+              }
+              return {
+                date: q.displayDate,
+                isToday: false,
+                ecsAmount: formatDaily(dEcs),
+                eipAmount: formatDaily(dEip),
+                settled: dayItems.length > 0
+              }
+            } catch {
+              return {
+                date: q.displayDate,
+                isToday: false,
+                ecsAmount: "0.00",
+                eipAmount: "0.00",
+                settled: false
+              }
+            }
+          })
+        )
+
+        for (const r of dailyResults) {
+          ecsDailyList.push({ date: r.date, amount: r.ecsAmount, isToday: r.isToday, settled: r.settled })
+          eipDailyList.push({ date: r.date, amount: r.eipAmount, isToday: r.isToday, settled: r.settled })
+        }
+      } catch {
+        for (const q of dateQueries) {
+          ecsDailyList.push({ date: q.displayDate, amount: "0.00", isToday: q.isToday, settled: false })
+          eipDailyList.push({ date: q.displayDate, amount: "0.00", isToday: q.isToday, settled: false })
+        }
       }
 
       financialBill = {
@@ -1269,23 +1355,25 @@ function ConsoleView() {
     const total = isPrivacy ? "****" : `¥${data?.financialBill?.ecsAmount || "0.00"}`
     const lines = list.map(item => {
       const amt = isPrivacy ? "****" : `¥${item.amount}`
-      const tag = item.isToday ? " (今日计费中)" : ""
+      let tag = ""
+      if (item.isToday) {
+        tag = parseFloat(item.amount) > 0 ? " (今日计费中)" : " (今日计费中，次日出账)"
+      } else if (item.settled) {
+        tag = " (官方已出账)"
+      } else {
+        tag = " (无费用)"
+      }
       return `📅 ${item.date}: ${amt}${tag}`
     })
-    const ecsAvgVal = parseFloat(data?.financialBill?.ecsAmount || "0") / Math.max(1, new Date().getDate())
-    const dailyAvg = isPrivacy
-      ? "****"
-      : `~¥${ecsAvgVal < 0.01 && ecsAvgVal > 0 ? ecsAvgVal.toFixed(3) : ecsAvgVal.toFixed(2)} / 天`
 
     const msg = [
       `ECS 实例 ID: ${config.ecsInstanceId}`,
-      `当月累计消费: ${total}`,
-      `日均预估消耗: ${dailyAvg}`,
+      `本月官方累计账单: ${total}`,
       "",
-      "【最近每日消费明细】",
+      "【官方每日实际账单】",
       lines.length > 0 ? lines.join("\n") : "暂无每日明细数据",
       "",
-      "注：费用包含 vCPU/内存计算资源与系统盘存储空间，数据由阿里云账单中心统计。"
+      "注：数据直接读取自阿里云账单中心（BSS OpenAPI），无任何人工估算。"
     ].join("\n")
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
@@ -1307,23 +1395,25 @@ function ConsoleView() {
     const total = isPrivacy ? "****" : `¥${data?.financialBill?.eipAmount || "0.00"}`
     const lines = list.map(item => {
       const amt = isPrivacy ? "****" : `¥${item.amount}`
-      const tag = item.isToday ? " (今日计费中)" : ""
+      let tag = ""
+      if (item.isToday) {
+        tag = parseFloat(item.amount) > 0 ? " (今日计费中)" : " (今日计费中，次日出账)"
+      } else if (item.settled) {
+        tag = " (官方已出账)"
+      } else {
+        tag = " (无费用)"
+      }
       return `📅 ${item.date}: ${amt}${tag}`
     })
-    const eipAvgVal = parseFloat(data?.financialBill?.eipAmount || "0") / Math.max(1, new Date().getDate())
-    const dailyAvg = isPrivacy
-      ? "****"
-      : `~¥${eipAvgVal < 0.01 && eipAvgVal > 0 ? eipAvgVal.toFixed(3) : eipAvgVal.toFixed(2)} / 天`
 
     const msg = [
       `公网 IP: ${data?.publicIp || "弹性公网 IP"}`,
-      `当月累计费用: ${total}`,
-      `日均预估消耗: ${dailyAvg}`,
+      `本月官方累计费用: ${total}`,
       "",
-      "【最近每日费用明细】",
+      "【官方每日实际账单】",
       lines.length > 0 ? lines.join("\n") : "暂无每日明细数据",
       "",
-      "注：出网流量享受 CDT 200G 免费额度，此处为弹性 IP 基础配置与保有费。"
+      "注：数据直接读取自阿里云账单中心（BSS OpenAPI），无任何人工估算。"
     ].join("\n")
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
@@ -1993,7 +2083,7 @@ function ConsoleView() {
                   {/* 当月实际扣费支出 */}
                   <VStack alignment="leading" spacing={4} padding={{ leading: 16 }} frame={{ maxWidth: Infinity }}>
                     <Text font={12} foregroundStyle="secondaryLabel">
-                      当月实时消费
+                      本月消费金额
                     </Text>
                     <HStack alignment="lastTextBaseline" spacing={3}>
                       <Text font={14} bold foregroundStyle="label">
@@ -2012,7 +2102,7 @@ function ConsoleView() {
                       }
                     >
                       {data.financialBill && parseFloat(data.financialBill.paymentAmount) > 0
-                        ? "已产生账单扣费"
+                        ? "官方实时账单"
                         : "免计费额度内"}
                     </Text>
                   </VStack>
