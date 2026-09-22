@@ -504,36 +504,78 @@ export class AliyunService {
       const now = new Date()
       const currentDay = now.getDate()
       const cycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
-      const data = await aliyunRequest<{
-        Data?: {
-          Items?: {
-            Item?: Array<{
-              PipCode?: string
-              ProductCode?: string
-              ProductName?: string
-              PaymentAmount?: number
-              PretaxGrossAmount?: number
-              PretaxAmount?: number
-              OutstandingAmount?: number
-              Currency?: string
-            }>
+
+      // 1. 优先调用 QueryBillOverview（官方控制台账单总览对齐，按产品维度直接汇总，确保 ECS/EIP 精确识别）
+      let items: Array<{
+        PipCode?: string
+        ProductCode?: string
+        ProductName?: string
+        PaymentAmount?: number
+        PretaxGrossAmount?: number
+        PretaxAmount?: number
+        OutstandingAmount?: number
+        Currency?: string
+      }> = []
+
+      try {
+        const overviewData = await aliyunRequest<{
+          Data?: {
+            Items?: {
+              Item?: Array<any>
+            }
           }
+        }>(
+          {
+            domain: "business.aliyuncs.com",
+            action: "QueryBillOverview",
+            version: "2017-12-14",
+            method: "POST",
+            params: {
+              BillingCycle: cycle
+            }
+          },
+          this.config
+        )
+        if (overviewData?.Data?.Items?.Item && overviewData.Data.Items.Item.length > 0) {
+          items = overviewData.Data.Items.Item
         }
-      }>(
-        {
-          domain: "business.aliyuncs.com",
-          action: "QueryAccountBill",
-          version: "2017-12-14",
-          method: "POST",
-          params: {
-            BillingCycle: cycle
+      } catch {}
+
+      // 2. 若 QueryBillOverview 无数据，回退至 QueryAccountBill（必须携带 IsGroupByProduct: true 才能返回产品层级分类）
+      if (items.length === 0) {
+        try {
+          const accountBillData = await aliyunRequest<{
+            Data?: {
+              Items?: {
+                Item?: Array<any>
+              }
+            }
+          }>(
+            {
+              domain: "business.aliyuncs.com",
+              action: "QueryAccountBill",
+              version: "2017-12-14",
+              method: "POST",
+              params: {
+                BillingCycle: cycle,
+                IsGroupByProduct: true
+              }
+            },
+            this.config
+          )
+          if (accountBillData?.Data?.Items?.Item && accountBillData.Data.Items.Item.length > 0) {
+            items = accountBillData.Data.Items.Item
           }
-        },
-        this.config
-      )
-      const items = data?.Data?.Items?.Item || []
+        } catch {}
+      }
+
+      if (items.length === 0) {
+        return null
+      }
+
       let totalPayment = 0
       let totalGross = 0
+      let allProductsEffective = 0
       let ecsTotal = 0
       let eipTotal = 0
       let cdtTotal = 0
@@ -541,31 +583,45 @@ export class AliyunService {
       let currency = "CNY"
 
       for (const it of items) {
-        const pip = String(it.PipCode || it.ProductCode || "").toLowerCase()
+        const code = String(it.PipCode || it.ProductCode || "").toLowerCase()
+        const name = String(it.ProductName || "")
         const pay = Number(it.PaymentAmount || 0)
         const gross = Number(it.PretaxGrossAmount || it.PretaxAmount || 0)
+        // 未扣款或按量计费时，有效金额取实付金额或应付金额
         const effective = pay > 0 ? pay : gross
 
         totalPayment += pay
         totalGross += gross
+        allProductsEffective += effective
         outstanding += Number(it.OutstandingAmount || 0)
         if (it.Currency) currency = it.Currency
 
-        if (pip === "ecs") {
+        // 强壮的云服务分类模糊识别
+        const isEcs = code === "ecs" || code.includes("ecs") || name.includes("云服务器") || name.includes("ECS")
+        const isEip = code === "eip" || code === "cbwp" || code.includes("eip") || code.includes("cbwp") || name.includes("弹性公网") || name.includes("EIP") || name.includes("公网IP") || name.includes("共享带宽")
+        const isCdt = code === "cdt" || code.includes("cdt") || name.includes("云数据传输") || name.includes("CDT")
+
+        if (isEcs) {
           ecsTotal += effective
-        } else if (pip === "eip" || pip === "cbwp") {
+        } else if (isEip) {
           eipTotal += effective
-        } else if (pip === "cdt") {
+        } else if (isCdt) {
           cdtTotal += effective
         }
       }
 
-      // 如果实付为0但应付原价有值（如代金券抵扣或按量未结算），取应付总额作为真实消费呈现
-      const finalPayment = totalPayment > 0 ? totalPayment : totalGross
+      // 当月消费优先采用各产品有效累计消费，保证与控制台账单总和（例如 ECS ¥0.40 + EIP ¥0.04 = ¥0.44）严格一致
+      const finalPayment = allProductsEffective > 0 ? allProductsEffective : (totalPayment > 0 ? totalPayment : totalGross)
 
       // 生成最近 7 天的每日明细推算序列
       const ecsDailyAvg = currentDay > 0 ? ecsTotal / currentDay : 0
       const eipDailyAvg = currentDay > 0 ? eipTotal / currentDay : 0
+
+      const formatDaily = (amt: number): string => {
+        if (amt <= 0) return "0.00"
+        if (amt < 0.01) return amt.toFixed(3)
+        return amt.toFixed(2)
+      }
 
       const ecsDailyList: DailyExpenseItem[] = []
       const eipDailyList: DailyExpenseItem[] = []
@@ -577,8 +633,8 @@ export class AliyunService {
         const isToday = i === 0
 
         const ratio = isToday ? Math.max(0.2, Math.min(1, now.getHours() / 24)) : 1.0
-        const ecsDayAmt = (ecsDailyAvg * ratio).toFixed(2)
-        const eipDayAmt = (eipDailyAvg * ratio).toFixed(2)
+        const ecsDayAmt = formatDaily(ecsDailyAvg * ratio)
+        const eipDayAmt = formatDaily(eipDailyAvg * ratio)
 
         ecsDailyList.push({ date: dateStr, amount: ecsDayAmt, isToday })
         eipDailyList.push({ date: dateStr, amount: eipDayAmt, isToday })

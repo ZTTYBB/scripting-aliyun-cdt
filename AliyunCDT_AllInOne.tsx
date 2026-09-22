@@ -420,58 +420,94 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
 
   try {
     const cycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
-    const billRes = await aliyunRequest<{
+
+    // 1. 优先调用 QueryBillOverview（对齐阿里云控制台账单总览，直接按产品汇算）
+    let billItems: Array<{
+      PipCode?: string
+      ProductCode?: string
+      ProductName?: string
+      PaymentAmount?: number
+      PretaxGrossAmount?: number
+      PretaxAmount?: number
+      OutstandingAmount?: number
+      Currency?: string
+    }> = []
+
+    const overviewRes = await aliyunRequest<{
       Data?: {
         Items?: {
-          Item?: Array<{
-            PipCode?: string
-            ProductCode?: string
-            ProductName?: string
-            PaymentAmount?: number
-            PretaxGrossAmount?: number
-            PretaxAmount?: number
-            OutstandingAmount?: number
-            Currency?: string
-          }>
+          Item?: Array<any>
         }
       }
-    }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
+    }>("business.aliyuncs.com", "QueryBillOverview", "2017-12-14", config, {
       BillingCycle: cycle
     }).catch(() => null)
 
-    if (billRes?.Data?.Items?.Item) {
-      const items = billRes.Data.Items.Item
+    if (overviewRes?.Data?.Items?.Item && overviewRes.Data.Items.Item.length > 0) {
+      billItems = overviewRes.Data.Items.Item
+    } else {
+      // 2. 回退调用 QueryAccountBill（带 IsGroupByProduct: true 才能返回产品维度分类）
+      const billRes = await aliyunRequest<{
+        Data?: {
+          Items?: {
+            Item?: Array<any>
+          }
+        }
+      }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
+        BillingCycle: cycle,
+        IsGroupByProduct: true
+      }).catch(() => null)
+
+      if (billRes?.Data?.Items?.Item && billRes.Data.Items.Item.length > 0) {
+        billItems = billRes.Data.Items.Item
+      }
+    }
+
+    if (billItems.length > 0) {
       let totalPayment = 0
       let totalGross = 0
+      let allProductsEffective = 0
       let ecsTotal = 0
       let eipTotal = 0
       let cdtTotal = 0
       let outstanding = 0
       let currency = "CNY"
 
-      for (const it of items) {
-        const pip = String(it.PipCode || it.ProductCode || "").toLowerCase()
+      for (const it of billItems) {
+        const code = String(it.PipCode || it.ProductCode || "").toLowerCase()
+        const name = String(it.ProductName || "")
         const pay = Number(it.PaymentAmount || 0)
         const gross = Number(it.PretaxGrossAmount || it.PretaxAmount || 0)
         const effective = pay > 0 ? pay : gross
 
         totalPayment += pay
         totalGross += gross
+        allProductsEffective += effective
         outstanding += Number(it.OutstandingAmount || 0)
         if (it.Currency) currency = it.Currency
 
-        if (pip === "ecs") {
+        const isEcs = code === "ecs" || code.includes("ecs") || name.includes("云服务器") || name.includes("ECS")
+        const isEip = code === "eip" || code === "cbwp" || code.includes("eip") || code.includes("cbwp") || name.includes("弹性公网") || name.includes("EIP") || name.includes("公网IP") || name.includes("共享带宽")
+        const isCdt = code === "cdt" || code.includes("cdt") || name.includes("云数据传输") || name.includes("CDT")
+
+        if (isEcs) {
           ecsTotal += effective
-        } else if (pip === "eip" || pip === "cbwp") {
+        } else if (isEip) {
           eipTotal += effective
-        } else if (pip === "cdt") {
+        } else if (isCdt) {
           cdtTotal += effective
         }
       }
 
-      const finalPayment = totalPayment > 0 ? totalPayment : totalGross
+      const finalPayment = allProductsEffective > 0 ? allProductsEffective : (totalPayment > 0 ? totalPayment : totalGross)
       const ecsDailyAvg = currentDay > 0 ? ecsTotal / currentDay : 0
       const eipDailyAvg = currentDay > 0 ? eipTotal / currentDay : 0
+
+      const formatDaily = (amt: number): string => {
+        if (amt <= 0) return "0.00"
+        if (amt < 0.01) return amt.toFixed(3)
+        return amt.toFixed(2)
+      }
 
       const ecsDailyList: DailyExpenseItem[] = []
       const eipDailyList: DailyExpenseItem[] = []
@@ -483,8 +519,8 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
         const isToday = i === 0
 
         const ratio = isToday ? Math.max(0.2, Math.min(1, now.getHours() / 24)) : 1.0
-        const ecsDayAmt = (ecsDailyAvg * ratio).toFixed(2)
-        const eipDayAmt = (eipDailyAvg * ratio).toFixed(2)
+        const ecsDayAmt = formatDaily(ecsDailyAvg * ratio)
+        const eipDayAmt = formatDaily(eipDailyAvg * ratio)
 
         ecsDailyList.push({ date: dateStr, amount: ecsDayAmt, isToday })
         eipDailyList.push({ date: dateStr, amount: eipDayAmt, isToday })
@@ -1854,7 +1890,10 @@ function AppDashboard() {
       const tag = item.isToday ? " (今日计费中)" : ""
       return `📅 ${item.date}: ${amt}${tag}`
     })
-    const dailyAvg = isPrivacy ? "****" : `~¥${(parseFloat(data?.financialBill?.ecsAmount || "0") / Math.max(1, new Date().getDate())).toFixed(2)} / 天`
+    const ecsAvgVal = parseFloat(data?.financialBill?.ecsAmount || "0") / Math.max(1, new Date().getDate())
+    const dailyAvg = isPrivacy
+      ? "****"
+      : `~¥${ecsAvgVal < 0.01 && ecsAvgVal > 0 ? ecsAvgVal.toFixed(3) : ecsAvgVal.toFixed(2)} / 天`
 
     const msg = [
       `ECS 实例 ID: ${config.ecsInstanceId}`,
@@ -1889,7 +1928,10 @@ function AppDashboard() {
       const tag = item.isToday ? " (今日计费中)" : ""
       return `📅 ${item.date}: ${amt}${tag}`
     })
-    const dailyAvg = isPrivacy ? "****" : `~¥${(parseFloat(data?.financialBill?.eipAmount || "0") / Math.max(1, new Date().getDate())).toFixed(2)} / 天`
+    const eipAvgVal = parseFloat(data?.financialBill?.eipAmount || "0") / Math.max(1, new Date().getDate())
+    const dailyAvg = isPrivacy
+      ? "****"
+      : `~¥${eipAvgVal < 0.01 && eipAvgVal > 0 ? eipAvgVal.toFixed(3) : eipAvgVal.toFixed(2)} / 天`
 
     const msg = [
       `公网 IP: ${data?.publicIp || "弹性公网 IP"}`,
