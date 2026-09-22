@@ -1015,6 +1015,29 @@ async function main() {
     }
   } catch (err: any) {
     console.error("小组件加载失败:", err)
+    // 弱网容灾：尝试降级渲染本地持久化快照，避免组件变红
+    try {
+      if (typeof Storage !== "undefined" && Storage?.get) {
+        const raw = Storage.get("aliyun_cdt_dashboard_cache")
+        if (raw) {
+          const cached = typeof raw === "string" ? JSON.parse(raw) : raw
+          const family = Widget.family
+          if (family === "accessoryInline") {
+            Widget.present(<AccessoryInlineView data={cached} />)
+          } else if (family === "accessoryRectangular") {
+            Widget.present(<AccessoryRectangularView data={cached} />)
+          } else if (family === "systemLarge") {
+            Widget.present(<LargeWidgetView data={cached} />)
+          } else if (family === "systemMedium") {
+            Widget.present(<MediumWidgetView data={cached} />)
+          } else {
+            Widget.present(<SmallWidgetView data={cached} />)
+          }
+          return
+        }
+      }
+    } catch {}
+
     Widget.present(
       <VStack
         alignment="leading"

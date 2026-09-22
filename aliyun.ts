@@ -214,6 +214,20 @@ export interface ECSInstanceInfo {
   instanceName?: string
 }
 
+export interface AccountBalanceInfo {
+  availableAmount: string
+  availableCashAmount: string
+  currency: string
+  status: "sufficient" | "low" | "arrears"
+}
+
+export interface MonthlyBillInfo {
+  billingCycle: string
+  paymentAmount: string
+  outstandingAmount: string
+  currency: string
+}
+
 type ECSIpValue = string | string[] | undefined
 
 interface ECSInstanceRecord {
@@ -408,5 +422,110 @@ export class AliyunService {
     }
 
     return { triggered, traffic, ecs }
+  }
+
+  /**
+   * 6. 重启 ECS 实例
+   */
+  async rebootECS(instanceId: string = this.config.ecsInstanceId, forceStop: boolean = false): Promise<boolean> {
+    const domain = `ecs.${this.config.regionId}.aliyuncs.com`
+    await aliyunRequest(
+      {
+        domain,
+        action: "RebootInstance",
+        version: "2014-05-26",
+        method: "POST",
+        params: {
+          InstanceId: instanceId,
+          ForceStop: forceStop
+        }
+      },
+      this.config
+    )
+    return true
+  }
+
+  /**
+   * 7. 获取账户可用余额 (支持优雅降级，未授权返回 null)
+   */
+  async getAccountBalance(): Promise<AccountBalanceInfo | null> {
+    try {
+      const data = await aliyunRequest<{
+        Data?: {
+          AvailableAmount?: string
+          AvailableCashAmount?: string
+          CreditAmount?: string
+          Currency?: string
+        }
+      }>(
+        {
+          domain: "business.aliyuncs.com",
+          action: "QueryAccountBalance",
+          version: "2017-12-14",
+          method: "POST"
+        },
+        this.config
+      )
+      if (!data?.Data) return null
+      const cash = parseFloat(data.Data.AvailableCashAmount || "0")
+      let status: "sufficient" | "low" | "arrears" = "sufficient"
+      if (cash <= 0) {
+        status = "arrears"
+      } else if (cash < 10) {
+        status = "low"
+      }
+      return {
+        availableAmount: data.Data.AvailableAmount || "0.00",
+        availableCashAmount: data.Data.AvailableCashAmount || "0.00",
+        currency: data.Data.Currency || "CNY",
+        status
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 8. 获取当月实时累计消费账单 (支持优雅降级，未授权返回 null)
+   */
+  async getMonthlyBill(): Promise<MonthlyBillInfo | null> {
+    try {
+      const now = new Date()
+      const cycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+      const data = await aliyunRequest<{
+        Data?: {
+          Items?: {
+            Item?: Array<{
+              PaymentAmount?: number
+              OutstandingAmount?: number
+              Currency?: string
+            }>
+          }
+        }
+      }>(
+        {
+          domain: "business.aliyuncs.com",
+          action: "QueryAccountBill",
+          version: "2017-12-14",
+          method: "POST",
+          params: {
+            BillingCycle: cycle
+          }
+        },
+        this.config
+      )
+      const items = data?.Data?.Items?.Item || []
+      const payment = items.reduce((sum, it) => sum + (it.PaymentAmount || 0), 0)
+      const outstanding = items.reduce((sum, it) => sum + (it.OutstandingAmount || 0), 0)
+      const currency = items[0]?.Currency || "CNY"
+      return {
+        billingCycle: cycle,
+        paymentAmount: payment.toFixed(2),
+        outstandingAmount: outstanding.toFixed(2),
+        currency
+      }
+    } catch {
+      return null
+    }
   }
 }

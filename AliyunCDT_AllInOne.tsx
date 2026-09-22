@@ -257,6 +257,20 @@ async function aliyunRequest<T = any>(
 
 // ==================== 3. 业务数据模型 ====================
 
+export interface AccountBalanceInfo {
+  availableAmount: string
+  availableCashAmount: string
+  currency: string
+  status: "sufficient" | "low" | "arrears"
+}
+
+export interface MonthlyBillInfo {
+  billingCycle: string
+  paymentAmount: string
+  outstandingAmount: string
+  currency: string
+}
+
 interface MonitorData {
   totalGB: number
   thresholdGB: number
@@ -272,7 +286,12 @@ interface MonitorData {
   ecsStatus: "Running" | "Stopped" | "Starting" | "Stopping" | "Unknown"
   publicIp?: string
   color: string
+  financialBalance?: AccountBalanceInfo | null
+  financialBill?: MonthlyBillInfo | null
 }
+
+const SNAPSHOT_STORAGE_KEY = "aliyun_cdt_dashboard_cache"
+const PRIVACY_STORAGE_KEY = "aliyun_cdt_privacy_mode"
 
 type ECSIpValue = string | string[] | undefined
 
@@ -357,6 +376,66 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
     : null
   const todayEstimatedGB = dailyUsage[dailyUsage.length - 1]?.valueGB ?? null
 
+  // 5. 资产与消费查询 (优雅降级，未授权时不中断主流程)
+  let financialBalance: AccountBalanceInfo | null = null
+  let financialBill: MonthlyBillInfo | null = null
+
+  try {
+    const balRes = await aliyunRequest<{
+      Data?: {
+        AvailableAmount?: string
+        AvailableCashAmount?: string
+        CreditAmount?: string
+        Currency?: string
+      }
+    }>("business.aliyuncs.com", "QueryAccountBalance", "2017-12-14", config).catch(() => null)
+
+    if (balRes?.Data) {
+      const cash = parseFloat(balRes.Data.AvailableCashAmount || "0")
+      let status: "sufficient" | "low" | "arrears" = "sufficient"
+      if (cash <= 0) {
+        status = "arrears"
+      } else if (cash < 10) {
+        status = "low"
+      }
+      financialBalance = {
+        availableAmount: balRes.Data.AvailableAmount || "0.00",
+        availableCashAmount: balRes.Data.AvailableCashAmount || "0.00",
+        currency: balRes.Data.Currency || "CNY",
+        status
+      }
+    }
+  } catch {}
+
+  try {
+    const cycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+    const billRes = await aliyunRequest<{
+      Data?: {
+        Items?: {
+          Item?: Array<{
+            PaymentAmount?: number
+            OutstandingAmount?: number
+            Currency?: string
+          }>
+        }
+      }
+    }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
+      BillingCycle: cycle
+    }).catch(() => null)
+
+    if (billRes?.Data?.Items?.Item) {
+      const items = billRes.Data.Items.Item
+      const payment = items.reduce((sum, it) => sum + (it.PaymentAmount || 0), 0)
+      const outstanding = items.reduce((sum, it) => sum + (it.OutstandingAmount || 0), 0)
+      financialBill = {
+        billingCycle: cycle,
+        paymentAmount: payment.toFixed(2),
+        outstandingAmount: outstanding.toFixed(2),
+        currency: items[0]?.Currency || "CNY"
+      }
+    }
+  } catch {}
+
   const color = percentage >= 90 ? "systemRed" : percentage >= 70 ? "systemOrange" : "systemGreen"
 
   return {
@@ -373,7 +452,9 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
     updatedAt: now,
     ecsStatus,
     publicIp,
-    color
+    color,
+    financialBalance,
+    financialBill
   }
 }
 
@@ -414,8 +495,8 @@ function humanizeAliyunError(rawMessage: string): string {
   return rawMessage
 }
 
-async function toggleECS(action: "start" | "stop", config: AppConfig) {
-  const apiAction = action === "start" ? "StartInstance" : "StopInstance"
+async function toggleECS(action: "start" | "stop" | "reboot", config: AppConfig) {
+  const apiAction = action === "start" ? "StartInstance" : action === "stop" ? "StopInstance" : "RebootInstance"
   await aliyunRequest(`ecs.${config.regionId}.aliyuncs.com`, apiAction, "2014-05-26", config, {
     InstanceId: config.ecsInstanceId.trim(),
     ForceStop: false
@@ -1632,14 +1713,64 @@ function SettingsComponent({
 
 // ==================== 7. 控制台仪表盘主视图 (Apple iOS 26 Liquid Glass System) ====================
 
+function getCachedDashboardSnapshot(): { data: MonitorData | null; lastUpdated: Date | null } {
+  try {
+    if (typeof Storage !== "undefined" && Storage?.get) {
+      const raw = Storage.get(SNAPSHOT_STORAGE_KEY)
+      if (raw) {
+        const parsed: MonitorData = typeof raw === "string" ? JSON.parse(raw) : raw
+        const ts = parsed.updatedAt ? new Date(parsed.updatedAt) : null
+        return { data: parsed, lastUpdated: ts }
+      }
+    }
+  } catch {}
+  return { data: null, lastUpdated: null }
+}
+
 function AppDashboard() {
   const [config, setConfig] = useState<AppConfig>(loadSavedConfig())
   const [showSettings, setShowSettings] = useState(!isConfigReady(config))
-  const [data, setData] = useState<MonitorData | null>(null)
+  const initialCache = getCachedDashboardSnapshot()
+  const [data, setData] = useState<MonitorData | null>(initialCache.data)
   const [loading, setLoading] = useState(false)
   const [btnLoading, setBtnLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(initialCache.lastUpdated)
+  const [isPrivacy, setIsPrivacy] = useState<boolean>(() => {
+    try {
+      return typeof Storage !== "undefined" && Storage.get(PRIVACY_STORAGE_KEY) === "true"
+    } catch {
+      return false
+    }
+  })
+  const [isCopied, setIsCopied] = useState(false)
+
+  const togglePrivacy = () => {
+    const next = !isPrivacy
+    setIsPrivacy(next)
+    try {
+      if (typeof Storage !== "undefined" && Storage?.set) {
+        Storage.set(PRIVACY_STORAGE_KEY, String(next))
+      }
+      if (typeof Haptic !== "undefined" && (Haptic as any)?.impact) {
+        ;(Haptic as any).impact("light")
+      }
+    } catch {}
+  }
+
+  const handleCopyIp = () => {
+    if (!data?.publicIp) return
+    try {
+      if (typeof Pasteboard !== "undefined" && (Pasteboard as any)?.setString) {
+        ;(Pasteboard as any).setString(data.publicIp)
+      }
+      if (typeof Haptic !== "undefined" && (Haptic as any)?.impact) {
+        ;(Haptic as any).impact("light")
+      }
+      setIsCopied(true)
+      setTimeout(() => setIsCopied(false), 1800)
+    } catch {}
+  }
 
   const refresh = useCallback(
     async (cfg: AppConfig = config) => {
@@ -1653,6 +1784,11 @@ function AppDashboard() {
         const res = await fetchMonitorData(cfg)
         setData(res)
         setLastUpdated(res.updatedAt)
+        try {
+          if (typeof Storage !== "undefined" && Storage?.set) {
+            Storage.set(SNAPSHOT_STORAGE_KEY, JSON.stringify(res))
+          }
+        } catch {}
       } catch (e: any) {
         setErrorMsg(humanizeAliyunError(e?.message || "网络请求失败，请检查配置"))
       } finally {
@@ -1668,19 +1804,29 @@ function AppDashboard() {
     }
   }, [])
 
-  const handleToggle = async (action: "start" | "stop") => {
+  const handleToggle = async (action: "start" | "stop" | "reboot") => {
     setBtnLoading(true)
-    setData(prev => prev ? {
-      ...prev,
-      ecsStatus: action === "start" ? "Starting" : "Stopping"
-    } : null)
+    setData(prev =>
+      prev
+        ? {
+            ...prev,
+            ecsStatus: action === "stop" ? "Stopping" : "Starting"
+          }
+        : null
+    )
     try {
+      if (typeof Haptic !== "undefined" && (Haptic as any)?.impact) {
+        ;(Haptic as any).impact("medium")
+      }
       await toggleECS(action, config)
       await refresh(config)
       setTimeout(() => {
         refresh(config)
       }, 2500)
     } catch (e: any) {
+      if (typeof Haptic !== "undefined" && (Haptic as any)?.notification) {
+        ;(Haptic as any).notification("error")
+      }
       setErrorMsg("操作失败: " + humanizeAliyunError(e?.message || String(e)))
       await refresh(config)
     } finally {
@@ -1707,6 +1853,28 @@ function AppDashboard() {
       }
     } else {
       await handleToggle("stop")
+    }
+  }
+
+  // 二次确认重启弹窗防误触！
+  const confirmReboot = async () => {
+    if (typeof Dialog !== "undefined" && Dialog.actionSheet) {
+      const selectedIndex = await Dialog.actionSheet({
+        title: "⚠️ 确认重启 ECS 实例？",
+        message: `实例 ID: ${config.ecsInstanceId}\n\n重启期间云服务器将短暂断开连接并在数十秒后自动恢复就绪。确定要立即重启吗？`,
+        cancelButton: true,
+        actions: [
+          {
+            label: "确认重启实例",
+            destructive: true
+          }
+        ]
+      })
+      if (selectedIndex === 0) {
+        await handleToggle("reboot")
+      }
+    } else {
+      await handleToggle("reboot")
     }
   }
 
@@ -1949,34 +2117,60 @@ function AppDashboard() {
 
             <Divider padding={{ leading: 64 }} />
 
-            {/* IP与地域行 */}
-            <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
-              <ZStack
-                frame={{ width: 36, height: 36 }}
-                background="rgba(0, 122, 255, 0.10)"
-                clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
-              >
-                <Image systemName="network" font={16} foregroundStyle="systemBlue" />
-              </ZStack>
-              <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                <Text font="subheadline" bold foregroundStyle="label">
-                  公网 IP 地址
-                </Text>
-                <Text font="caption2" foregroundStyle={publicIpColor} lineLimit={1}>
-                  {publicIpLabel}
-                </Text>
-              </VStack>
-            </HStack>
+            {/* IP与地域行 (支持点击一键复制与触感反馈) */}
+            <Button
+              action={handleCopyIp}
+              buttonStyle="plain"
+              accessibilityLabel="复制公网 IP 地址"
+            >
+              <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
+                <ZStack
+                  frame={{ width: 36, height: 36 }}
+                  background="rgba(0, 122, 255, 0.10)"
+                  clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
+                >
+                  <Image
+                    systemName={isCopied ? "checkmark" : "network"}
+                    font={16}
+                    foregroundStyle={isCopied ? "systemGreen" : "systemBlue"}
+                  />
+                </ZStack>
+                <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                  <Text font="subheadline" bold foregroundStyle="label">
+                    公网 IP 地址
+                  </Text>
+                  <Text font="caption2" foregroundStyle={isCopied ? "systemGreen" : publicIpColor} lineLimit={1}>
+                    {isCopied ? "已复制到剪贴板 ✓" : publicIpLabel}
+                  </Text>
+                </VStack>
+                <HStack
+                  spacing={4}
+                  padding={{ horizontal: 8, vertical: 4 }}
+                  background={isCopied ? "rgba(52, 199, 89, 0.12)" : "rgba(142, 142, 147, 0.10)"}
+                  clipShape={{ type: "capsule" }}
+                  alignment="center"
+                >
+                  <Image
+                    systemName={isCopied ? "checkmark" : "doc.on.doc"}
+                    font={11}
+                    foregroundStyle={isCopied ? "systemGreen" : "secondaryLabel"}
+                  />
+                  <Text font={11} bold foregroundStyle={isCopied ? "systemGreen" : "secondaryLabel"}>
+                    {isCopied ? "已复制" : "复制"}
+                  </Text>
+                </HStack>
+              </HStack>
+            </Button>
 
             <Divider padding={{ horizontal: 16 }} />
 
-            {/* 开关机控制按钮行 (Apple iOS 26 Liquid Glass Capsules) */}
+            {/* 开关机与重启控制按钮行 (Apple iOS 26 Liquid Glass Capsules 三核控制) */}
             <HStack
-              spacing={12}
+              spacing={8}
               padding={{ horizontal: 16, vertical: 14 }}
               frame={{ maxWidth: Infinity, alignment: "center" }}
             >
-              {/* 停止实例按钮：运行中为淡红微光液态玻璃胶囊，停止时为幽灵按钮 */}
+              {/* 停止实例按钮 */}
               <Button
                 action={confirmStop}
                 disabled={!isRunning || btnLoading}
@@ -1990,7 +2184,7 @@ function AppDashboard() {
                 }}
               >
                 <HStack
-                  spacing={7}
+                  spacing={5}
                   alignment="center"
                   frame={{
                     maxWidth: Infinity,
@@ -2014,24 +2208,75 @@ function AppDashboard() {
                 >
                   <Image
                     systemName="power"
-                    font={15}
+                    font={13}
                     fontWeight="bold"
                     foregroundStyle={isRunning && !btnLoading ? "systemRed" : "secondaryLabel"}
                   />
                   <Text
-                    font={14}
+                    font={13}
                     bold={isRunning && !btnLoading}
                     foregroundStyle={isRunning && !btnLoading ? "systemRed" : "secondaryLabel"}
                     lineLimit={1}
-                    minScaleFactor={0.9}
-                    allowsTightening={true}
                   >
-                    {btnLoading ? "处理中..." : "停止实例"}
+                    停止
                   </Text>
                 </HStack>
               </Button>
 
-              {/* 启动实例按钮：已开机时为极简灰色幽灵按钮，已关机时激活翠绿液态玻璃胶囊 */}
+              {/* 重启实例按钮 */}
+              <Button
+                action={confirmReboot}
+                disabled={!isRunning || btnLoading}
+                buttonStyle="plain"
+                accessibilityLabel={btnLoading ? "正在重启实例" : "重启实例"}
+                frame={{
+                  maxWidth: Infinity,
+                  minHeight: 44,
+                  idealHeight: 44,
+                  alignment: "center"
+                }}
+              >
+                <HStack
+                  spacing={5}
+                  alignment="center"
+                  frame={{
+                    maxWidth: Infinity,
+                    minHeight: 44,
+                    idealHeight: 44,
+                    alignment: "center"
+                  }}
+                  background={isRunning && !btnLoading ? "rgba(255, 149, 0, 0.10)" : "systemGray6"}
+                  border={
+                    isRunning && !btnLoading
+                      ? { style: "rgba(255, 149, 0, 0.28)", width: 0.75 }
+                      : { style: "systemGray4", width: 0.75 }
+                  }
+                  clipShape={{ type: "capsule" }}
+                  shadow={
+                    isRunning && !btnLoading
+                      ? { color: "rgba(255, 149, 0, 0.16)", radius: 6, x: 0, y: 2 }
+                      : undefined
+                  }
+                  {...(isRunning && !btnLoading ? liquidGlass(true) : {})}
+                >
+                  <Image
+                    systemName="arrow.triangle.2.circlepath"
+                    font={13}
+                    fontWeight="bold"
+                    foregroundStyle={isRunning && !btnLoading ? "systemOrange" : "secondaryLabel"}
+                  />
+                  <Text
+                    font={13}
+                    bold={isRunning && !btnLoading}
+                    foregroundStyle={isRunning && !btnLoading ? "systemOrange" : "secondaryLabel"}
+                    lineLimit={1}
+                  >
+                    重启
+                  </Text>
+                </HStack>
+              </Button>
+
+              {/* 启动实例按钮 */}
               <Button
                 action={() => handleToggle("start")}
                 disabled={isRunning || btnLoading}
@@ -2045,7 +2290,7 @@ function AppDashboard() {
                 }}
               >
                 <HStack
-                  spacing={7}
+                  spacing={5}
                   alignment="center"
                   frame={{
                     maxWidth: Infinity,
@@ -2069,27 +2314,131 @@ function AppDashboard() {
                 >
                   <Image
                     systemName="play"
-                    font={14}
+                    font={13}
                     fontWeight="bold"
                     foregroundStyle={!isRunning && !btnLoading ? "systemGreen" : "secondaryLabel"}
                   />
                   <Text
-                    font={14}
+                    font={13}
                     bold={!isRunning && !btnLoading}
                     foregroundStyle={!isRunning && !btnLoading ? "systemGreen" : "secondaryLabel"}
                     lineLimit={1}
-                    minScaleFactor={0.9}
-                    allowsTightening={true}
                   >
-                    {btnLoading ? "处理中..." : "启动实例"}
+                    启动
                   </Text>
                 </HStack>
               </Button>
             </HStack>
           </VStack>
           <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-            为防误触，停止实例需要进行二次弹窗确认后方可执行。
+            为防误触，停止与重启实例均需通过二次确认弹窗执行。
           </Text>
+
+          {/* Section 2: 账户资产与实时费用 (Apple Wallet HIG Card) */}
+          {data?.financialBalance && (
+            <>
+              <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
+                <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
+                  账户资产与费用
+                </Text>
+                <Spacer />
+                <Button action={togglePrivacy} buttonStyle="plain" accessibilityLabel={isPrivacy ? "显示金额" : "隐藏金额"}>
+                  <HStack spacing={4} alignment="center">
+                    <Image
+                      systemName={isPrivacy ? "eye.slash.fill" : "eye.fill"}
+                      font={12}
+                      foregroundStyle="secondaryLabel"
+                    />
+                    <Text font={11} foregroundStyle="secondaryLabel">
+                      {isPrivacy ? "已隐藏" : "明细"}
+                    </Text>
+                  </HStack>
+                </Button>
+              </HStack>
+
+              <VStack
+                background="systemBackground"
+                clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
+                shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
+                spacing={0}
+                frame={{ maxWidth: Infinity, alignment: "leading" }}
+              >
+                <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center">
+                  {/* 可用现金余额 */}
+                  <VStack alignment="leading" spacing={4} frame={{ maxWidth: Infinity }}>
+                    <Text font={12} foregroundStyle="secondaryLabel">
+                      账户现金余额
+                    </Text>
+                    <HStack alignment="lastTextBaseline" spacing={3}>
+                      <Text font={14} bold foregroundStyle={data.financialBalance.status === "arrears" ? "systemRed" : "label"}>
+                        {data.financialBalance.currency === "USD" ? "$" : "¥"}
+                      </Text>
+                      <Text font={22} bold foregroundStyle={data.financialBalance.status === "arrears" ? "systemRed" : "label"}>
+                        {isPrivacy ? "****" : data.financialBalance.availableCashAmount}
+                      </Text>
+                    </HStack>
+                    <HStack spacing={4} alignment="center">
+                      <Circle
+                        fill={
+                          data.financialBalance.status === "sufficient"
+                            ? "systemGreen"
+                            : data.financialBalance.status === "low"
+                              ? "systemOrange"
+                              : "systemRed"
+                        }
+                        frame={{ width: 6, height: 6 }}
+                      />
+                      <Text
+                        font={11}
+                        foregroundStyle={
+                          data.financialBalance.status === "sufficient"
+                            ? "systemGreen"
+                            : data.financialBalance.status === "low"
+                              ? "systemOrange"
+                              : "systemRed"
+                        }
+                      >
+                        {data.financialBalance.status === "sufficient"
+                          ? "资金充足"
+                          : data.financialBalance.status === "low"
+                            ? "余额偏低"
+                            : "已欠费"}
+                      </Text>
+                    </HStack>
+                  </VStack>
+
+                  <Divider frame={{ height: 44 }} />
+
+                  {/* 当月实际扣费支出 */}
+                  <VStack alignment="leading" spacing={4} padding={{ leading: 16 }} frame={{ maxWidth: Infinity }}>
+                    <Text font={12} foregroundStyle="secondaryLabel">
+                      当月实时消费
+                    </Text>
+                    <HStack alignment="lastTextBaseline" spacing={3}>
+                      <Text font={14} bold foregroundStyle="label">
+                        {data.financialBill?.currency === "USD" ? "$" : "¥"}
+                      </Text>
+                      <Text font={22} bold foregroundStyle="label">
+                        {isPrivacy ? "****" : (data.financialBill ? data.financialBill.paymentAmount : "0.00")}
+                      </Text>
+                    </HStack>
+                    <Text
+                      font={11}
+                      foregroundStyle={
+                        data.financialBill && parseFloat(data.financialBill.paymentAmount) > 0
+                          ? "systemOrange"
+                          : "systemGreen"
+                      }
+                    >
+                      {data.financialBill && parseFloat(data.financialBill.paymentAmount) > 0
+                        ? "已产生账单扣费"
+                        : "免计费额度内"}
+                    </Text>
+                  </VStack>
+                </HStack>
+              </VStack>
+            </>
+          )}
 
           {/* Section 2: CDT 流量用量卡片 */}
           <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
@@ -2319,6 +2668,29 @@ async function main() {
         Widget.present(<SmallWidget data={data} />)
       }
     } catch (err: any) {
+      console.error("小组件加载失败:", err)
+      // 弱网容灾：尝试降级渲染本地持久化快照，避免组件变红
+      try {
+        if (typeof Storage !== "undefined" && Storage?.get) {
+          const raw = Storage.get(SNAPSHOT_STORAGE_KEY)
+          if (raw) {
+            const cached = typeof raw === "string" ? JSON.parse(raw) : raw
+            if (Widget.family === "accessoryInline") {
+              Widget.present(<AccessoryInlineWidget data={cached} />)
+            } else if (Widget.family === "accessoryRectangular") {
+              Widget.present(<AccessoryRectangularWidget data={cached} />)
+            } else if (Widget.family === "systemLarge") {
+              Widget.present(<LargeWidget data={cached} />)
+            } else if (Widget.family === "systemMedium") {
+              Widget.present(<MediumWidget data={cached} />)
+            } else {
+              Widget.present(<SmallWidget data={cached} />)
+            }
+            return
+          }
+        }
+      } catch {}
+
       Widget.present(
         <VStack
           alignment="leading"
