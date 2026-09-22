@@ -37,6 +37,8 @@ import {
 
 // ==================== 1. 本地存储配置管理 ====================
 
+const APP_VERSION = "1.4.3"
+
 interface AppConfig {
   accessKeyId: string
   accessKeySecret: string
@@ -1896,6 +1898,19 @@ function SettingsComponent({
             </Text>
           </HStack>
         </Button>
+
+        {/* 版本号与构建信息 */}
+        <VStack alignment="center" spacing={4} padding={{ top: 16, bottom: 24 }}>
+          <HStack spacing={6} alignment="center">
+            <Image systemName="checkmark.shield.fill" font={12} foregroundStyle="systemGreen" />
+            <Text font={13} bold foregroundStyle="secondaryLabel">
+              阿里云 CDT 监控 v{APP_VERSION}
+            </Text>
+          </HStack>
+          <Text font={11} foregroundStyle="tertiaryLabel">
+            BSS 官方实时账单 · Build 2026.09.22
+          </Text>
+        </VStack>
       </VStack>
     </ScrollView>
   )
@@ -2977,6 +2992,13 @@ function AppDashboard() {
             </Button>
             <Spacer />
           </HStack>
+
+          {/* 版本与构建信息 */}
+          <VStack alignment="center" spacing={2} padding={{ top: 8, bottom: 20 }}>
+            <Text font={11} foregroundStyle="quaternaryLabel">
+              Aliyun CDT Monitor v{APP_VERSION}
+            </Text>
+          </VStack>
         </VStack>
       </ScrollView>
     </NavigationStack>

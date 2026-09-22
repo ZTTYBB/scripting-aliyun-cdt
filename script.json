@@ -6,7 +6,7 @@
   },
   "icon": "cloud.fill",
   "color": "rgba(10, 132, 255, 1.00)",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "runInApp": true,
   "description": "阿里云 CDT 公网出网流量监控与 ECS 实例远程智能控制台。",
   "localizedDescriptions": {
