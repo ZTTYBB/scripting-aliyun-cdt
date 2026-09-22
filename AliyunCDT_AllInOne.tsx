@@ -480,8 +480,16 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
         const code = String(it.PipCode || it.ProductCode || "").toLowerCase()
         const name = String(it.ProductName || "")
         const pay = Number(it.PaymentAmount || 0)
-        const gross = Number(it.PretaxGrossAmount || it.PretaxAmount || 0)
-        const effective = pay > 0 ? pay : gross
+        const gross = Number(it.PretaxGrossAmount || 0)
+        // 关键：必须优先取 PretaxAmount（实际应付金额：已扣除抢占式竞价折扣、优惠券，如抢占式单日 ¥0.13，月度 ¥0.40）
+        let effective = 0
+        if (it.PretaxAmount !== undefined && it.PretaxAmount !== null && it.PretaxAmount !== "") {
+          effective = Number(it.PretaxAmount) || 0
+        } else if (pay > 0) {
+          effective = pay
+        } else {
+          effective = gross
+        }
 
         totalPayment += pay
         totalGross += gross
@@ -535,16 +543,6 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
       try {
         const dailyResults = await Promise.all(
           dateQueries.map(async q => {
-            // 今日账单通常在次日(T+1)凌晨完成结算出账
-            if (q.isToday) {
-              return {
-                date: q.displayDate,
-                isToday: true,
-                ecsAmount: "0.00",
-                eipAmount: "0.00",
-                settled: false
-              }
-            }
             try {
               const dayRes = await aliyunRequest<{
                 Data?: {
@@ -566,8 +564,16 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
                 const c = String(it.PipCode || it.ProductCode || "").toLowerCase()
                 const n = String(it.ProductName || "")
                 const p = Number(it.PaymentAmount || 0)
-                const g = Number(it.PretaxGrossAmount || it.PretaxAmount || 0)
-                const eff = p > 0 ? p : g
+                const g = Number(it.PretaxGrossAmount || 0)
+                // 优先取 PretaxAmount（抢占式实例折扣后的真实应付金额）
+                let eff = 0
+                if (it.PretaxAmount !== undefined && it.PretaxAmount !== null && it.PretaxAmount !== "") {
+                  eff = Number(it.PretaxAmount) || 0
+                } else if (p > 0) {
+                  eff = p
+                } else {
+                  eff = g
+                }
 
                 if (c === "ecs" || c.includes("ecs") || n.includes("云服务器") || n.includes("ECS")) {
                   dEcs += eff
@@ -586,7 +592,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
               }
               return {
                 date: q.displayDate,
-                isToday: false,
+                isToday: q.isToday,
                 ecsAmount: formatDaily(dEcs),
                 eipAmount: formatDaily(dEip),
                 settled: dayItems.length > 0
@@ -594,7 +600,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
             } catch {
               return {
                 date: q.displayDate,
-                isToday: false,
+                isToday: q.isToday,
                 ecsAmount: "0.00",
                 eipAmount: "0.00",
                 settled: false
