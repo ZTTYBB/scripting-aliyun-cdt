@@ -221,11 +221,22 @@ export interface AccountBalanceInfo {
   status: "sufficient" | "low" | "arrears"
 }
 
+export interface DailyExpenseItem {
+  date: string
+  amount: string
+  isToday?: boolean
+}
+
 export interface MonthlyBillInfo {
   billingCycle: string
   paymentAmount: string
   outstandingAmount: string
   currency: string
+  ecsAmount: string
+  eipAmount: string
+  cdtAmount: string
+  ecsDailyList: DailyExpenseItem[]
+  eipDailyList: DailyExpenseItem[]
 }
 
 type ECSIpValue = string | string[] | undefined
@@ -491,12 +502,18 @@ export class AliyunService {
   async getMonthlyBill(): Promise<MonthlyBillInfo | null> {
     try {
       const now = new Date()
+      const currentDay = now.getDate()
       const cycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
       const data = await aliyunRequest<{
         Data?: {
           Items?: {
             Item?: Array<{
+              PipCode?: string
+              ProductCode?: string
+              ProductName?: string
               PaymentAmount?: number
+              PretaxGrossAmount?: number
+              PretaxAmount?: number
               OutstandingAmount?: number
               Currency?: string
             }>
@@ -515,14 +532,68 @@ export class AliyunService {
         this.config
       )
       const items = data?.Data?.Items?.Item || []
-      const payment = items.reduce((sum, it) => sum + (it.PaymentAmount || 0), 0)
-      const outstanding = items.reduce((sum, it) => sum + (it.OutstandingAmount || 0), 0)
-      const currency = items[0]?.Currency || "CNY"
+      let totalPayment = 0
+      let totalGross = 0
+      let ecsTotal = 0
+      let eipTotal = 0
+      let cdtTotal = 0
+      let outstanding = 0
+      let currency = "CNY"
+
+      for (const it of items) {
+        const pip = String(it.PipCode || it.ProductCode || "").toLowerCase()
+        const pay = Number(it.PaymentAmount || 0)
+        const gross = Number(it.PretaxGrossAmount || it.PretaxAmount || 0)
+        const effective = pay > 0 ? pay : gross
+
+        totalPayment += pay
+        totalGross += gross
+        outstanding += Number(it.OutstandingAmount || 0)
+        if (it.Currency) currency = it.Currency
+
+        if (pip === "ecs") {
+          ecsTotal += effective
+        } else if (pip === "eip" || pip === "cbwp") {
+          eipTotal += effective
+        } else if (pip === "cdt") {
+          cdtTotal += effective
+        }
+      }
+
+      // 如果实付为0但应付原价有值（如代金券抵扣或按量未结算），取应付总额作为真实消费呈现
+      const finalPayment = totalPayment > 0 ? totalPayment : totalGross
+
+      // 生成最近 7 天的每日明细推算序列
+      const ecsDailyAvg = currentDay > 0 ? ecsTotal / currentDay : 0
+      const eipDailyAvg = currentDay > 0 ? eipTotal / currentDay : 0
+
+      const ecsDailyList: DailyExpenseItem[] = []
+      const eipDailyList: DailyExpenseItem[] = []
+
+      const daysCount = Math.min(7, currentDay)
+      for (let i = 0; i < daysCount; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth(), currentDay - i)
+        const dateStr = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+        const isToday = i === 0
+
+        const ratio = isToday ? Math.max(0.2, Math.min(1, now.getHours() / 24)) : 1.0
+        const ecsDayAmt = (ecsDailyAvg * ratio).toFixed(2)
+        const eipDayAmt = (eipDailyAvg * ratio).toFixed(2)
+
+        ecsDailyList.push({ date: dateStr, amount: ecsDayAmt, isToday })
+        eipDailyList.push({ date: dateStr, amount: eipDayAmt, isToday })
+      }
+
       return {
         billingCycle: cycle,
-        paymentAmount: payment.toFixed(2),
+        paymentAmount: finalPayment.toFixed(2),
         outstandingAmount: outstanding.toFixed(2),
-        currency
+        currency,
+        ecsAmount: ecsTotal.toFixed(2),
+        eipAmount: eipTotal.toFixed(2),
+        cdtAmount: cdtTotal.toFixed(2),
+        ecsDailyList,
+        eipDailyList
       }
     } catch {
       return null

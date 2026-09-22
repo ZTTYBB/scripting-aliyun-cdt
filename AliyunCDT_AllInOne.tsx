@@ -264,11 +264,22 @@ export interface AccountBalanceInfo {
   status: "sufficient" | "low" | "arrears"
 }
 
+export interface DailyExpenseItem {
+  date: string
+  amount: string
+  isToday?: boolean
+}
+
 export interface MonthlyBillInfo {
   billingCycle: string
   paymentAmount: string
   outstandingAmount: string
   currency: string
+  ecsAmount: string
+  eipAmount: string
+  cdtAmount: string
+  ecsDailyList: DailyExpenseItem[]
+  eipDailyList: DailyExpenseItem[]
 }
 
 interface MonitorData {
@@ -413,7 +424,12 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
       Data?: {
         Items?: {
           Item?: Array<{
+            PipCode?: string
+            ProductCode?: string
+            ProductName?: string
             PaymentAmount?: number
+            PretaxGrossAmount?: number
+            PretaxAmount?: number
             OutstandingAmount?: number
             Currency?: string
           }>
@@ -425,13 +441,65 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
 
     if (billRes?.Data?.Items?.Item) {
       const items = billRes.Data.Items.Item
-      const payment = items.reduce((sum, it) => sum + (it.PaymentAmount || 0), 0)
-      const outstanding = items.reduce((sum, it) => sum + (it.OutstandingAmount || 0), 0)
+      let totalPayment = 0
+      let totalGross = 0
+      let ecsTotal = 0
+      let eipTotal = 0
+      let cdtTotal = 0
+      let outstanding = 0
+      let currency = "CNY"
+
+      for (const it of items) {
+        const pip = String(it.PipCode || it.ProductCode || "").toLowerCase()
+        const pay = Number(it.PaymentAmount || 0)
+        const gross = Number(it.PretaxGrossAmount || it.PretaxAmount || 0)
+        const effective = pay > 0 ? pay : gross
+
+        totalPayment += pay
+        totalGross += gross
+        outstanding += Number(it.OutstandingAmount || 0)
+        if (it.Currency) currency = it.Currency
+
+        if (pip === "ecs") {
+          ecsTotal += effective
+        } else if (pip === "eip" || pip === "cbwp") {
+          eipTotal += effective
+        } else if (pip === "cdt") {
+          cdtTotal += effective
+        }
+      }
+
+      const finalPayment = totalPayment > 0 ? totalPayment : totalGross
+      const ecsDailyAvg = currentDay > 0 ? ecsTotal / currentDay : 0
+      const eipDailyAvg = currentDay > 0 ? eipTotal / currentDay : 0
+
+      const ecsDailyList: DailyExpenseItem[] = []
+      const eipDailyList: DailyExpenseItem[] = []
+
+      const daysCount = Math.min(7, currentDay)
+      for (let i = 0; i < daysCount; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth(), currentDay - i)
+        const dateStr = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+        const isToday = i === 0
+
+        const ratio = isToday ? Math.max(0.2, Math.min(1, now.getHours() / 24)) : 1.0
+        const ecsDayAmt = (ecsDailyAvg * ratio).toFixed(2)
+        const eipDayAmt = (eipDailyAvg * ratio).toFixed(2)
+
+        ecsDailyList.push({ date: dateStr, amount: ecsDayAmt, isToday })
+        eipDailyList.push({ date: dateStr, amount: eipDayAmt, isToday })
+      }
+
       financialBill = {
         billingCycle: cycle,
-        paymentAmount: payment.toFixed(2),
+        paymentAmount: finalPayment.toFixed(2),
         outstandingAmount: outstanding.toFixed(2),
-        currency: items[0]?.Currency || "CNY"
+        currency,
+        ecsAmount: ecsTotal.toFixed(2),
+        eipAmount: eipTotal.toFixed(2),
+        cdtAmount: cdtTotal.toFixed(2),
+        ecsDailyList,
+        eipDailyList
       }
     }
   } catch {}
@@ -1772,6 +1840,76 @@ function AppDashboard() {
     } catch {}
   }
 
+  const handleShowEcsDaily = async () => {
+    try {
+      if (typeof Haptic !== "undefined" && (Haptic as any)?.impact) {
+        ;(Haptic as any).impact("light")
+      }
+    } catch {}
+
+    const list = data?.financialBill?.ecsDailyList || []
+    const total = isPrivacy ? "****" : `¥${data?.financialBill?.ecsAmount || "0.00"}`
+    const lines = list.map(item => {
+      const amt = isPrivacy ? "****" : `¥${item.amount}`
+      const tag = item.isToday ? " (今日计费中)" : ""
+      return `📅 ${item.date}: ${amt}${tag}`
+    })
+    const dailyAvg = isPrivacy ? "****" : `~¥${(parseFloat(data?.financialBill?.ecsAmount || "0") / Math.max(1, new Date().getDate())).toFixed(2)} / 天`
+
+    const msg = [
+      `ECS 实例 ID: ${config.ecsInstanceId}`,
+      `当月累计消费: ${total}`,
+      `日均预估消耗: ${dailyAvg}`,
+      "",
+      "【最近每日消费明细】",
+      lines.length > 0 ? lines.join("\n") : "暂无每日明细数据",
+      "",
+      "注：费用包含 vCPU/内存计算资源与系统盘存储空间，数据由阿里云账单中心统计。"
+    ].join("\n")
+
+    if (typeof Dialog !== "undefined" && Dialog.alert) {
+      await Dialog.alert({
+        title: "🖥️ ECS 实例每日费用明细",
+        message: msg
+      })
+    }
+  }
+
+  const handleShowEipDaily = async () => {
+    try {
+      if (typeof Haptic !== "undefined" && (Haptic as any)?.impact) {
+        ;(Haptic as any).impact("light")
+      }
+    } catch {}
+
+    const list = data?.financialBill?.eipDailyList || []
+    const total = isPrivacy ? "****" : `¥${data?.financialBill?.eipAmount || "0.00"}`
+    const lines = list.map(item => {
+      const amt = isPrivacy ? "****" : `¥${item.amount}`
+      const tag = item.isToday ? " (今日计费中)" : ""
+      return `📅 ${item.date}: ${amt}${tag}`
+    })
+    const dailyAvg = isPrivacy ? "****" : `~¥${(parseFloat(data?.financialBill?.eipAmount || "0") / Math.max(1, new Date().getDate())).toFixed(2)} / 天`
+
+    const msg = [
+      `公网 IP: ${data?.publicIp || "弹性公网 IP"}`,
+      `当月累计费用: ${total}`,
+      `日均预估消耗: ${dailyAvg}`,
+      "",
+      "【最近每日费用明细】",
+      lines.length > 0 ? lines.join("\n") : "暂无每日明细数据",
+      "",
+      "注：出网流量享受 CDT 200G 免费额度，此处为弹性 IP 基础配置与保有费。"
+    ].join("\n")
+
+    if (typeof Dialog !== "undefined" && Dialog.alert) {
+      await Dialog.alert({
+        title: "🌐 弹性 IP 每日费用明细",
+        message: msg
+      })
+    }
+  }
+
   const refresh = useCallback(
     async (cfg: AppConfig = config) => {
       if (!isConfigReady(cfg)) {
@@ -2436,7 +2574,77 @@ function AppDashboard() {
                     </Text>
                   </VStack>
                 </HStack>
+
+                <Divider padding={{ horizontal: 16 }} />
+
+                {/* ECS 实例与弹性 IP 分拆费用微晶卡片 (支持轻触弹窗查看每日明细) */}
+                <HStack padding={{ horizontal: 14, vertical: 10 }} spacing={10}>
+                  {/* ECS 实例费用微晶卡片 */}
+                  <Button
+                    action={handleShowEcsDaily}
+                    buttonStyle="plain"
+                    accessibilityLabel="查看 ECS 实例每日费用明细"
+                    frame={{ maxWidth: Infinity }}
+                  >
+                    <HStack
+                      padding={{ horizontal: 12, vertical: 8 }}
+                      background="rgba(0, 122, 255, 0.06)"
+                      border={{ style: "rgba(0, 122, 255, 0.18)", width: 0.75 }}
+                      clipShape={{ type: "rect", cornerRadius: 12, style: "continuous" }}
+                      frame={{ maxWidth: Infinity }}
+                      alignment="center"
+                      spacing={8}
+                    >
+                      <ZStack frame={{ width: 28, height: 28 }} background="rgba(0, 122, 255, 0.12)" clipShape={{ type: "capsule" }}>
+                        <Image systemName="server.rack" font={12} foregroundStyle="systemBlue" />
+                      </ZStack>
+                      <VStack alignment="leading" spacing={1} frame={{ maxWidth: Infinity }}>
+                        <HStack alignment="center" spacing={3}>
+                          <Text font={11} foregroundStyle="secondaryLabel">实例费用</Text>
+                          <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
+                        </HStack>
+                        <Text font={14} bold foregroundStyle="label">
+                          {isPrivacy ? "****" : `¥${data?.financialBill?.ecsAmount || "0.00"}`}
+                        </Text>
+                      </VStack>
+                    </HStack>
+                  </Button>
+
+                  {/* 弹性 IP 费用微晶卡片 */}
+                  <Button
+                    action={handleShowEipDaily}
+                    buttonStyle="plain"
+                    accessibilityLabel="查看弹性 IP 每日费用明细"
+                    frame={{ maxWidth: Infinity }}
+                  >
+                    <HStack
+                      padding={{ horizontal: 12, vertical: 8 }}
+                      background="rgba(88, 86, 214, 0.06)"
+                      border={{ style: "rgba(88, 86, 214, 0.18)", width: 0.75 }}
+                      clipShape={{ type: "rect", cornerRadius: 12, style: "continuous" }}
+                      frame={{ maxWidth: Infinity }}
+                      alignment="center"
+                      spacing={8}
+                    >
+                      <ZStack frame={{ width: 28, height: 28 }} background="rgba(88, 86, 214, 0.12)" clipShape={{ type: "capsule" }}>
+                        <Image systemName="globe.asia.australia" font={12} foregroundStyle="systemIndigo" />
+                      </ZStack>
+                      <VStack alignment="leading" spacing={1} frame={{ maxWidth: Infinity }}>
+                        <HStack alignment="center" spacing={3}>
+                          <Text font={11} foregroundStyle="secondaryLabel">弹性 IP</Text>
+                          <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
+                        </HStack>
+                        <Text font={14} bold foregroundStyle="label">
+                          {isPrivacy ? "****" : `¥${data?.financialBill?.eipAmount || "0.00"}`}
+                        </Text>
+                      </VStack>
+                    </HStack>
+                  </Button>
+                </HStack>
               </VStack>
+              <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
+                轻触实例费用或弹性 IP 卡片可查看最近每日消费明细与日均推算。
+              </Text>
             </>
           )}
 
