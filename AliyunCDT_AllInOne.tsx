@@ -37,7 +37,7 @@ import {
 
 // ==================== 1. 本地存储配置管理 ====================
 
-const APP_VERSION = "1.4.4"
+const APP_VERSION = "1.5.0"
 
 interface AppConfig {
   accessKeyId: string
@@ -57,9 +57,9 @@ const DEFAULT_CONFIG: AppConfig = {
   accessKeySecret: "",
   regionId: "cn-hongkong",
   ecsInstanceId: "",
-  trafficThresholdGB: 180,
+  trafficThresholdGB: 200,
   resetDayOfMonth: 1,
-  autoStopOnExceed: true
+  autoStopOnExceed: false
 }
 
 function loadSavedConfig(): AppConfig {
@@ -367,14 +367,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
   let ecsStatus = (instance?.Status as any) || "Unknown"
   const publicIp = getInstancePublicIp(instance)
 
-  if (config.autoStopOnExceed && totalGB >= thresholdGB && ecsStatus === "Running") {
-    await aliyunRequest(`ecs.${config.regionId}.aliyuncs.com`, "StopInstance", "2014-05-26", config, {
-      InstanceId: config.ecsInstanceId.trim(),
-      ForceStop: false,
-      StoppedMode: "StopCharging"
-    })
-    ecsStatus = "Stopping"
-  }
+  // 纯统计模式：手机端仅只读拉取用量与账单，关机熔断由 VPS 独立守护
 
   const now = new Date()
   const currentDay = now.getDate()
@@ -835,7 +828,7 @@ function getECSStatusMeta(status: MonitorData["ecsStatus"]): ECSStatusMeta {
     case "Stopping":
       return { label: "停止中", shortLabel: "停止中", color: "systemOrange" }
     case "Stopped":
-      return { label: "已停止", shortLabel: "停止", color: "secondaryLabel" }
+      return { label: "节省停机中", shortLabel: "休眠", color: "systemIndigo" }
     default:
       return { label: "状态未知", shortLabel: "未知", color: "secondaryLabel" }
   }
@@ -1870,10 +1863,10 @@ function SettingsComponent({
             </ZStack>
             <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
               <Text font="subheadline" bold foregroundStyle="label">
-                超额自动关机防扣费
+                手机端自动熔断关机
               </Text>
               <Text font="caption2" foregroundStyle="secondaryLabel">
-                当出网流量达到阈值时自动停止 ECS
+                已由 VPS 守护，建议保持关闭（纯只读看板）
               </Text>
             </VStack>
             <Toggle
@@ -1883,7 +1876,7 @@ function SettingsComponent({
           </HStack>
         </VStack>
         <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 16 }}>
-          当月 CDT 出网流量达到警戒线时，小组件与控制台将自动触发关机以防超额产生账单。
+          VPS 托管纯统计模式：保活与熔断由 VPS 独立负责，手机端作为纯统计看板，避免两端重复关机冲突。
         </Text>
 
         {/* 底部保存按钮 (Apple iOS 26 Liquid Glass Capsule) */}
@@ -2962,14 +2955,14 @@ function AppDashboard() {
             )}
           </VStack>
           <HStack alignment="top" spacing={8} padding={{ leading: 8, bottom: 4 }}>
-            <Image systemName="shield.fill" font={12} foregroundStyle="secondaryLabel" />
+            <Image systemName="antenna.radiowaves.left.and.right" font={12} foregroundStyle="systemBlue" />
             <Text
               font={12}
               foregroundStyle="secondaryLabel"
               lineLimit={3}
               frame={{ maxWidth: Infinity, alignment: "leading" }}
             >
-              自动熔断：当出网流量达到 {config.trafficThresholdGB} GB 时将自动停止 ECS 实例防止产生账单。
+              VPS 托管纯统计模式：实例由远端 VPS 自动保活与夜间节省停机，手机端仅展示实时 CDT 流量与官方折后账单。
             </Text>
           </HStack>
 

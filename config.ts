@@ -4,7 +4,7 @@
  */
 import { Storage } from "scripting"
 
-export const APP_VERSION = "1.4.4"
+export const APP_VERSION = "1.5.0"
 
 export interface AppConfig {
   accessKeyId: string
@@ -21,9 +21,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   accessKeySecret: "",
   regionId: "cn-hongkong",
   ecsInstanceId: "",
-  trafficThresholdGB: 180,
+  trafficThresholdGB: 200,
   resetDayOfMonth: 1,
-  autoStopOnExceed: true
+  autoStopOnExceed: false
 }
 
 export const STORAGE_KEY = "aliyun_cdt_monitor_config"

@@ -425,15 +425,7 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
   let ecsStatus = (instance?.Status as any) || "Unknown"
   const publicIp = getInstancePublicIp(instance)
 
-  // 3. 超额自动熔断保护：≥ 阈值且正在运行时自动停止
-  if (config.autoStopOnExceed && totalGB >= thresholdGB && ecsStatus === "Running") {
-    await aliyunRequest(`ecs.${config.regionId}.aliyuncs.com`, "StopInstance", "2014-05-26", config, {
-      InstanceId: config.ecsInstanceId.trim(),
-      ForceStop: false,
-      StoppedMode: "StopCharging"
-    })
-    ecsStatus = "Stopping"
-  }
+  // 3. 纯统计模式：小组件不执行任何关机请求，仅只读监控流量与状态
 
   // 4. 重置日推算
   const now = new Date()
@@ -486,7 +478,7 @@ function getECSStatusMeta(status: WidgetData["ecsStatus"]): ECSStatusMeta {
     case "Stopping":
       return { label: "停止中", shortLabel: "停止中", color: "systemOrange" }
     case "Stopped":
-      return { label: "已停止", shortLabel: "停止", color: "secondaryLabel" }
+      return { label: "节省停机中", shortLabel: "休眠", color: "systemIndigo" }
     default:
       return { label: "状态未知", shortLabel: "未知", color: "secondaryLabel" }
   }
