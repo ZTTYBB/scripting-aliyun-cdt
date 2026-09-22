@@ -1636,9 +1636,19 @@ function AppDashboard() {
   const isRunning = data?.ecsStatus === "Running"
   const statusLabel = loading && !data
     ? "同步中"
-    : data?.ecsStatus === "Stopped"
-      ? "已停止"
-      : data?.ecsStatus || (errorMsg ? "同步失败" : "等待同步")
+    : data?.ecsStatus === "Running"
+      ? "运行中"
+      : data?.ecsStatus === "Stopped"
+        ? "已停止"
+        : data?.ecsStatus === "Starting"
+          ? "启动中"
+          : data?.ecsStatus === "Stopping"
+            ? "停止中"
+            : data?.ecsStatus === "Unknown"
+              ? "状态未知"
+              : errorMsg
+                ? "同步失败"
+                : "等待同步"
   const publicIpLabel = loading
     ? "获取中..."
     : errorMsg && !data
