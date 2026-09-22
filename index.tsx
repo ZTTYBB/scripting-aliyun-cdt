@@ -36,7 +36,7 @@ import {
 
 // ==================== 1. 本地存储配置管理 ====================
 
-const APP_VERSION = "1.4.3"
+const APP_VERSION = "1.4.4"
 
 interface AppConfig {
   accessKeyId: string
@@ -368,7 +368,8 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   if (config.autoStopOnExceed && totalGB >= thresholdGB && ecsStatus === "Running") {
     await aliyunRequest(`ecs.${config.regionId}.aliyuncs.com`, "StopInstance", "2014-05-26", config, {
       InstanceId: config.ecsInstanceId.trim(),
-      ForceStop: false
+      ForceStop: false,
+      StoppedMode: "StopCharging"
     })
     ecsStatus = "Stopping"
   }
@@ -683,10 +684,14 @@ function humanizeAliyunError(rawMessage: string): string {
 
 async function executeECSAction(action: "start" | "stop" | "reboot", config: AppConfig) {
   const apiAction = action === "start" ? "StartInstance" : action === "stop" ? "StopInstance" : "RebootInstance"
-  await aliyunRequest(`ecs.${config.regionId}.aliyuncs.com`, apiAction, "2014-05-26", config, {
+  const params: Record<string, any> = {
     InstanceId: config.ecsInstanceId.trim(),
     ForceStop: false
-  })
+  }
+  if (action === "stop") {
+    params.StoppedMode = "StopCharging"
+  }
+  await aliyunRequest(`ecs.${config.regionId}.aliyuncs.com`, apiAction, "2014-05-26", config, params)
 }
 
 function splitLogLine(log: string): { time: string; message: string } {

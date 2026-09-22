@@ -405,7 +405,8 @@ export class AliyunService {
         method: "POST",
         params: {
           InstanceId: instanceId,
-          ForceStop: forceStop
+          ForceStop: forceStop,
+          StoppedMode: "StopCharging"
         }
       },
       this.config

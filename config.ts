@@ -4,7 +4,7 @@
  */
 import { Storage } from "scripting"
 
-export const APP_VERSION = "1.4.3"
+export const APP_VERSION = "1.4.4"
 
 export interface AppConfig {
   accessKeyId: string

@@ -429,7 +429,8 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
   if (config.autoStopOnExceed && totalGB >= thresholdGB && ecsStatus === "Running") {
     await aliyunRequest(`ecs.${config.regionId}.aliyuncs.com`, "StopInstance", "2014-05-26", config, {
       InstanceId: config.ecsInstanceId.trim(),
-      ForceStop: false
+      ForceStop: false,
+      StoppedMode: "StopCharging"
     })
     ecsStatus = "Stopping"
   }
