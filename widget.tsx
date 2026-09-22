@@ -521,16 +521,18 @@ function TrafficRing({
         }}
         frame={{ width: size, height: size }}
       />
-      <Circle
-        trim={{ from: 0, to: progress }}
-        stroke={{
-          shapeStyle: data.color,
-          strokeStyle: { lineWidth, lineCap: "round" }
-        }}
-        rotationEffect={-90}
-        widgetAccentable
-        frame={{ width: size, height: size }}
-      />
+      {progress > 0.001 && (
+        <Circle
+          trim={{ from: 0, to: progress }}
+          stroke={{
+            shapeStyle: data.color,
+            strokeStyle: { lineWidth, lineCap: "round" }
+          }}
+          rotationEffect={-90}
+          widgetAccentable
+          frame={{ width: size, height: size }}
+        />
+      )}
       <VStack spacing={0} alignment="center">
         <Text
           font={valueFont}
@@ -1014,12 +1016,21 @@ async function main() {
   } catch (err: any) {
     console.error("小组件加载失败:", err)
     Widget.present(
-      <VStack alignment="leading" spacing={4}>
-        <Text font="caption1" bold foregroundStyle="systemRed">
-          ⚠️ 获取失败
-        </Text>
-        <Text font="caption2" foregroundStyle="secondaryLabel">
-          {err?.message || "网络或凭据错误"}
+      <VStack
+        alignment="leading"
+        spacing={6}
+        padding={{ horizontal: 14, vertical: 12 }}
+        widgetBackground="systemBackground"
+        frame={{ maxWidth: Infinity, maxHeight: Infinity }}
+      >
+        <HStack spacing={6} alignment="center">
+          <Image systemName="exclamationmark.triangle.fill" font={13} foregroundStyle="systemRed" />
+          <Text font="caption1" bold foregroundStyle="systemRed">
+            获取失败
+          </Text>
+        </HStack>
+        <Text font="caption2" foregroundStyle="secondaryLabel" lineLimit={3}>
+          {err?.message || "网络请求超时或凭据无效"}
         </Text>
       </VStack>
     )

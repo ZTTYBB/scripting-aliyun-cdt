@@ -6,15 +6,17 @@ import { AppIntentManager, AppIntentProtocol, Widget } from "scripting"
 import { AliyunService } from "./aliyun"
 import { loadConfig } from "./config"
 
-const aliyun = new AliyunService(loadConfig())
-
 /** 意图 1：静默刷新小组件数据 */
 export const RefreshTrafficIntent = AppIntentManager.register({
   name: "RefreshTrafficIntent",
   protocol: AppIntentProtocol.AppIntent,
   perform: async () => {
     try {
+      const aliyun = new AliyunService(loadConfig())
       await aliyun.checkAndEnforceThreshold()
+      if (typeof Widget !== "undefined" && Widget.reloadAllTimelines) {
+        Widget.reloadAllTimelines()
+      }
     } catch (e) {
       console.error("RefreshTrafficIntent 失败:", e)
     }
@@ -27,7 +29,11 @@ export const StartECSIntent = AppIntentManager.register({
   protocol: AppIntentProtocol.AppIntent,
   perform: async () => {
     try {
+      const aliyun = new AliyunService(loadConfig())
       await aliyun.startECS()
+      if (typeof Widget !== "undefined" && Widget.reloadAllTimelines) {
+        Widget.reloadAllTimelines()
+      }
     } catch (e) {
       console.error("StartECSIntent 失败:", e)
     }
@@ -40,7 +46,11 @@ export const StopECSIntent = AppIntentManager.register({
   protocol: AppIntentProtocol.AppIntent,
   perform: async () => {
     try {
+      const aliyun = new AliyunService(loadConfig())
       await aliyun.stopECS()
+      if (typeof Widget !== "undefined" && Widget.reloadAllTimelines) {
+        Widget.reloadAllTimelines()
+      }
     } catch (e) {
       console.error("StopECSIntent 失败:", e)
     }

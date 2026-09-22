@@ -264,6 +264,7 @@ interface MonitorData {
   percentage: number
   daysRemaining: number
   dailyBudgetGB: string
+  monthTimeProgress: number
   dailyUsage: DailyUsagePoint[]
   sevenDayTotalGB: number | null
   todayEstimatedGB: number | null
@@ -346,6 +347,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
   const daysRemaining = Math.max(1, lastDay - currentDay + 1)
   const dailyBudgetGB = (remainingGB / daysRemaining).toFixed(2)
+  const monthTimeProgress = Math.min(100, Math.max(1, Number(((currentDay / lastDay) * 100).toFixed(1))))
   const dailyUsage = buildDailyUsage(config, totalGB, now)
   const knownDailyValues = dailyUsage
     .map(item => item.valueGB)
@@ -364,6 +366,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
     percentage,
     daysRemaining,
     dailyBudgetGB,
+    monthTimeProgress,
     dailyUsage,
     sevenDayTotalGB,
     todayEstimatedGB,
@@ -372,6 +375,43 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
     publicIp,
     color
   }
+}
+
+function getTrafficHealthMeta(percentage: number, monthTimeProgress: number): {
+  label: string
+  color: string
+  icon: string
+} {
+  if (percentage >= 90) {
+    return { label: "严重超标 · 存在熔断风险", color: "systemRed", icon: "exclamationmark.octagon.fill" }
+  }
+  if (percentage > monthTimeProgress + 15) {
+    return { label: "消耗偏快 · 超前时间进度", color: "systemOrange", icon: "exclamationmark.circle.fill" }
+  }
+  return { label: "用量健康 · 处于安全预算内", color: "systemGreen", icon: "checkmark.circle.fill" }
+}
+
+function humanizeAliyunError(rawMessage: string): string {
+  if (!rawMessage) return "未知错误"
+  if (rawMessage.includes("InvalidAccessKeyId.NotFound")) {
+    return "AccessKey ID 不存在或已失效，请核对凭据。"
+  }
+  if (rawMessage.includes("SignatureDoesNotMatch")) {
+    return "AccessKey Secret 错误导致签名校验失败，请检查 Secret 是否正确。"
+  }
+  if (rawMessage.includes("InvalidInstanceId.NotFound")) {
+    return "找不到指定的 ECS 实例，请核对实例 ID 与所在地域 (Region)。"
+  }
+  if (rawMessage.includes("Forbidden.RAM") || rawMessage.includes("NoPermission") || rawMessage.includes("Unauthorized")) {
+    return "RAM 权限不足：请在阿里云访问控制为该 Key 授予 AliyunECSFullAccess 和 CDT 读权限。"
+  }
+  if (rawMessage.includes("IncorrectInstanceStatus")) {
+    return "实例当前状态无法执行此操作，请稍候重试。"
+  }
+  if (rawMessage.includes("OperationDenied.NoStock")) {
+    return "当前地域实例资源库存紧张，无法启动。"
+  }
+  return rawMessage
 }
 
 async function toggleECS(action: "start" | "stop", config: AppConfig) {
@@ -547,16 +587,18 @@ function TrafficRing({
         }}
         frame={{ width: size, height: size }}
       />
-      <Circle
-        trim={{ from: 0, to: progress }}
-        stroke={{
-          shapeStyle: data.color,
-          strokeStyle: { lineWidth, lineCap: "round" }
-        }}
-        rotationEffect={-90}
-        widgetAccentable
-        frame={{ width: size, height: size }}
-      />
+      {progress > 0.001 && (
+        <Circle
+          trim={{ from: 0, to: progress }}
+          stroke={{
+            shapeStyle: data.color,
+            strokeStyle: { lineWidth, lineCap: "round" }
+          }}
+          rotationEffect={-90}
+          widgetAccentable
+          frame={{ width: size, height: size }}
+        />
+      )}
       <VStack spacing={0} alignment="center">
         <Text
           font={valueFont}
@@ -1168,6 +1210,43 @@ function SettingsComponent({
     }
   }
 
+  const REGION_PRESETS = [
+    { id: "cn-hongkong", label: "🇭🇰 中国香港 (cn-hongkong)" },
+    { id: "cn-hangzhou", label: "🇨🇳 华东1 杭州 (cn-hangzhou)" },
+    { id: "cn-shanghai", label: "🇨🇳 华东2 上海 (cn-shanghai)" },
+    { id: "cn-beijing", label: "🇨🇳 华北2 北京 (cn-beijing)" },
+    { id: "cn-shenzhen", label: "🇨🇳 华南1 深圳 (cn-shenzhen)" },
+    { id: "ap-southeast-1", label: "🇸🇬 新加坡 (ap-southeast-1)" },
+    { id: "ap-northeast-1", label: "🇯🇵 日本东京 (ap-northeast-1)" },
+    { id: "us-west-1", label: "🇺🇸 美国硅谷 (us-west-1)" }
+  ]
+
+  const handleSelectRegion = async () => {
+    if (typeof Dialog !== "undefined" && Dialog.actionSheet) {
+      const actions = REGION_PRESETS.map(item => ({
+        label: `${item.label}${region === item.id ? " ✓" : ""}`
+      }))
+      actions.push({ label: "🌐 自定义输入其他地域..." })
+
+      const idx = await Dialog.actionSheet({
+        title: "选择 ECS 所在地域",
+        message: "请选择实例部署的物理 Region ID",
+        cancelButton: true,
+        actions
+      })
+
+      if (idx !== null && idx >= 0) {
+        if (idx < REGION_PRESETS.length) {
+          setRegion(REGION_PRESETS[idx].id)
+        } else if (idx === REGION_PRESETS.length) {
+          promptField("设置 ECS 地域", "请输入阿里云 Region ID (如 cn-guangzhou)", region, "cn-hongkong", setRegion)
+        }
+      }
+    } else {
+      promptField("设置 ECS 地域", "请输入阿里云 Region ID", region, "cn-hongkong", setRegion)
+    }
+  }
+
   const handleSave = () => {
     if (!ak.trim() || !sk.trim() || !ecsId.trim()) {
       setErrorNotice("请填写完整的 AccessKey ID、Secret 与 ECS 实例 ID！")
@@ -1238,27 +1317,33 @@ function SettingsComponent({
           </Button>
         </HStack>
 
-        {/* 提示横幅 */}
+        {/* 提示横幅 (SF Symbols 矢量化) */}
         {errorNotice && (
           <HStack
+            alignment="center"
+            spacing={8}
             padding={{ horizontal: 16, vertical: 12 }}
             background="rgba(255, 59, 48, 0.10)"
             border={{ style: "rgba(255, 59, 48, 0.25)", width: 0.75 }}
             clipShape={{ type: "rect", cornerRadius: 16, style: "continuous" }}
           >
-            <Text font="caption1" bold foregroundStyle="systemRed">
-              ⚠️ {errorNotice}
+            <Image systemName="exclamationmark.triangle.fill" font={14} foregroundStyle="systemRed" />
+            <Text font="caption1" bold foregroundStyle="systemRed" lineLimit={2}>
+              {errorNotice}
             </Text>
           </HStack>
         )}
         {successNotice && (
           <HStack
+            alignment="center"
+            spacing={8}
             padding={{ horizontal: 16, vertical: 12 }}
             background="rgba(52, 199, 89, 0.10)"
             border={{ style: "rgba(52, 199, 89, 0.25)", width: 0.75 }}
             clipShape={{ type: "rect", cornerRadius: 16, style: "continuous" }}
           >
-            <Text font="caption1" bold foregroundStyle="systemGreen">
+            <Image systemName="checkmark.circle.fill" font={14} foregroundStyle="systemGreen" />
+            <Text font="caption1" bold foregroundStyle="systemGreen" lineLimit={2}>
               {successNotice}
             </Text>
           </HStack>
@@ -1440,11 +1525,9 @@ function SettingsComponent({
               </Text>
             </VStack>
             <SettingsActionButton
-              label="修改"
-              accessibilityLabel="设置 ECS 地域"
-              action={() =>
-                promptField("设置 ECS 地域", "如 cn-hongkong, cn-hangzhou, cn-shanghai, ap-southeast-1 等", region, "cn-hongkong", setRegion)
-              }
+              label="选择"
+              accessibilityLabel="选择 ECS 地域"
+              action={handleSelectRegion}
             />
           </HStack>
         </VStack>
@@ -1556,6 +1639,7 @@ function AppDashboard() {
   const [loading, setLoading] = useState(false)
   const [btnLoading, setBtnLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
 
   const refresh = useCallback(
     async (cfg: AppConfig = config) => {
@@ -1568,8 +1652,9 @@ function AppDashboard() {
       try {
         const res = await fetchMonitorData(cfg)
         setData(res)
+        setLastUpdated(res.updatedAt)
       } catch (e: any) {
-        setErrorMsg(e?.message || "网络请求失败，请检查配置")
+        setErrorMsg(humanizeAliyunError(e?.message || "网络请求失败，请检查配置"))
       } finally {
         setLoading(false)
       }
@@ -1585,11 +1670,19 @@ function AppDashboard() {
 
   const handleToggle = async (action: "start" | "stop") => {
     setBtnLoading(true)
+    setData(prev => prev ? {
+      ...prev,
+      ecsStatus: action === "start" ? "Starting" : "Stopping"
+    } : null)
     try {
       await toggleECS(action, config)
       await refresh(config)
+      setTimeout(() => {
+        refresh(config)
+      }, 2500)
     } catch (e: any) {
-      setErrorMsg("操作失败: " + e?.message)
+      setErrorMsg("操作失败: " + humanizeAliyunError(e?.message || String(e)))
+      await refresh(config)
     } finally {
       setBtnLoading(false)
     }
@@ -1634,6 +1727,33 @@ function AppDashboard() {
   }
 
   const isRunning = data?.ecsStatus === "Running"
+  const isStarting = data?.ecsStatus === "Starting"
+  const isStopping = data?.ecsStatus === "Stopping"
+  const isTransitional = isStarting || isStopping
+  const isStopped = data?.ecsStatus === "Stopped"
+
+  const statusColor = isRunning
+    ? "systemGreen"
+    : isTransitional
+      ? "systemOrange"
+      : isStopped
+        ? "secondaryLabel"
+        : errorMsg && !data
+          ? "systemRed"
+          : "secondaryLabel"
+
+  const haloColor = isRunning
+    ? "rgba(52, 199, 89, 0.28)"
+    : isTransitional
+      ? "rgba(255, 159, 10, 0.30)"
+      : "rgba(142, 142, 147, 0.25)"
+
+  const capsuleBg = isRunning
+    ? "rgba(52, 199, 89, 0.10)"
+    : isTransitional
+      ? "rgba(255, 159, 10, 0.12)"
+      : "rgba(142, 142, 147, 0.12)"
+
   const statusLabel = loading && !data
     ? "同步中"
     : data?.ecsStatus === "Running"
@@ -1656,6 +1776,12 @@ function AppDashboard() {
       : data?.publicIp || (data ? "未绑定公网 IP" : "等待同步")
   const publicIpColor = data?.publicIp ? "systemBlue" : errorMsg && !data ? "systemRed" : "secondaryLabel"
 
+  const now = new Date()
+  const currentDay = now.getDate()
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
+  const monthTimeProgress = data?.monthTimeProgress ?? Math.min(100, Math.max(1, Number(((currentDay / lastDay) * 100).toFixed(1))))
+  const healthMeta = data ? getTrafficHealthMeta(data.percentage, monthTimeProgress) : null
+
   return (
     <NavigationStack>
       <ScrollView
@@ -1668,39 +1794,73 @@ function AppDashboard() {
           spacing={14}
           padding={{ horizontal: 16, top: 12, bottom: 20 }}
         >
-          {/* 顶部标题与设置入口 */}
+          {/* 顶部标题与设置/刷新入口 */}
           <HStack alignment="center" padding={{ horizontal: 4, bottom: 2 }}>
             <HStack spacing={8} alignment="center">
               <ZStack
-                frame={{ width: 32, height: 32 }}
+                frame={{ width: 34, height: 34 }}
                 background="rgba(0, 122, 255, 0.10)"
                 clipShape={{ type: "capsule" }}
               >
                 <Image systemName="cloud.fill" font={16} foregroundStyle="systemBlue" />
               </ZStack>
-              <Text font="title3" bold foregroundStyle="label">
-                阿里云 CDT 智控台
-              </Text>
+              <VStack alignment="leading" spacing={1}>
+                <Text font="headline" bold foregroundStyle="label">
+                  阿里云 CDT 智控台
+                </Text>
+                <Text font={10} foregroundStyle="secondaryLabel">
+                  {loading
+                    ? "正在同步..."
+                    : lastUpdated
+                      ? `${String(lastUpdated.getHours()).padStart(2, "0")}:${String(lastUpdated.getMinutes()).padStart(2, "0")} 已同步`
+                      : "等待同步"}
+                </Text>
+              </VStack>
             </HStack>
             <Spacer />
-            <Button
-              action={() => setShowSettings(true)}
-              buttonStyle="plain"
-              accessibilityLabel="设置"
-            >
-              <HStack
-                spacing={5}
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                alignment="center"
-                {...liquidGlass(true)}
+            <HStack spacing={8} alignment="center">
+              {/* 全局刷新按钮 */}
+              <Button
+                action={() => refresh(config)}
+                disabled={loading || btnLoading}
+                buttonStyle="plain"
+                accessibilityLabel="刷新数据"
               >
-                <Image systemName="gearshape.fill" font={13} foregroundStyle="systemBlue" />
-                <Text font="caption1" bold foregroundStyle="systemBlue">设置</Text>
-              </HStack>
-            </Button>
+                <HStack
+                  spacing={4}
+                  padding={{ horizontal: 10, vertical: 6 }}
+                  background="rgba(0, 122, 255, 0.10)"
+                  border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
+                  clipShape={{ type: "capsule" }}
+                  alignment="center"
+                  {...liquidGlass(true)}
+                >
+                  <Image systemName="arrow.clockwise" font={12} foregroundStyle="systemBlue" />
+                  <Text font="caption1" bold foregroundStyle="systemBlue">
+                    {loading ? "同步中" : "刷新"}
+                  </Text>
+                </HStack>
+              </Button>
+              {/* 设置入口 */}
+              <Button
+                action={() => setShowSettings(true)}
+                buttonStyle="plain"
+                accessibilityLabel="设置"
+              >
+                <HStack
+                  spacing={4}
+                  padding={{ horizontal: 10, vertical: 6 }}
+                  background="rgba(0, 122, 255, 0.10)"
+                  border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
+                  clipShape={{ type: "capsule" }}
+                  alignment="center"
+                  {...liquidGlass(true)}
+                >
+                  <Image systemName="gearshape.fill" font={12} foregroundStyle="systemBlue" />
+                  <Text font="caption1" bold foregroundStyle="systemBlue">设置</Text>
+                </HStack>
+              </Button>
+            </HStack>
           </HStack>
 
           {errorMsg && (
@@ -1769,20 +1929,20 @@ function AppDashboard() {
                   {config.ecsInstanceId}
                 </Text>
               </VStack>
-              {/* 运行状态胶囊 (呼吸微光发光圆点 + 淡绿背景深绿字) */}
+              {/* 运行状态胶囊 (双层呼吸微光雷达波纹发光圆点 + 动态语义色彩) */}
               <HStack
                 padding={{ horizontal: 10, vertical: 5 }}
-                background={isRunning ? "rgba(52, 199, 89, 0.10)" : "rgba(142, 142, 147, 0.12)"}
+                background={capsuleBg}
                 clipShape={{ type: "capsule" }}
                 spacing={6}
                 alignment="center"
               >
-                <ZStack frame={{ width: 12, height: 12 }} alignment="center">
-                  <Circle fill={isRunning ? "rgba(52, 199, 89, 0.28)" : "rgba(142, 142, 147, 0.25)"} frame={{ width: 12, height: 12 }} />
-                  <Circle fill={isRunning ? "systemGreen" : "secondaryLabel"} frame={{ width: 6, height: 6 }} />
+                <ZStack frame={{ width: 14, height: 14 }} alignment="center">
+                  <Circle fill={haloColor} frame={{ width: 14, height: 14 }} />
+                  <Circle fill={statusColor} frame={{ width: 7, height: 7 }} />
                 </ZStack>
-                <Text font={12} bold foregroundStyle={isRunning ? "systemGreen" : "secondaryLabel"}>
-                  {isRunning ? "运行中" : statusLabel}
+                <Text font={12} bold foregroundStyle={statusColor}>
+                  {statusLabel}
                 </Text>
               </HStack>
             </HStack>
@@ -1994,7 +2154,7 @@ function AppDashboard() {
 
             {/* 线性进度条保持胶囊形状，浅色与深色都保留足够对比度 */}
             {data && (
-              <VStack padding={{ horizontal: 16, top: 2, bottom: 16 }}>
+              <VStack padding={{ horizontal: 16, top: 2, bottom: 12 }}>
                 <ProgressView
                   progressViewStyle="linear"
                   value={Math.max(0.01, Math.min(1.0, data.percentage / 100))}
@@ -2004,6 +2164,24 @@ function AppDashboard() {
                   clipShape={{ type: "capsule" }}
                 />
               </VStack>
+            )}
+
+            {/* 时间进度 vs 流量进度健康度提示 */}
+            {data && healthMeta && (
+              <HStack
+                spacing={6}
+                alignment="center"
+                padding={{ horizontal: 16, top: 0, bottom: 14 }}
+              >
+                <Image
+                  systemName={healthMeta.icon}
+                  font={12}
+                  foregroundStyle={healthMeta.color}
+                />
+                <Text font={11} foregroundStyle={healthMeta.color} lineLimit={1}>
+                  本月时间已过 {monthTimeProgress.toFixed(0)}% · 流量消耗 {data.percentage.toFixed(1)}%（{healthMeta.label}）
+                </Text>
+              </HStack>
             )}
 
             <Divider padding={{ horizontal: 16 }} />
@@ -2142,9 +2320,21 @@ async function main() {
       }
     } catch (err: any) {
       Widget.present(
-        <VStack>
-          <Text font="caption2" foregroundStyle="systemRed">
-            {err?.message || "拉取失败"}
+        <VStack
+          alignment="leading"
+          spacing={6}
+          padding={{ horizontal: 14, vertical: 12 }}
+          widgetBackground="systemBackground"
+          frame={{ maxWidth: Infinity, maxHeight: Infinity }}
+        >
+          <HStack spacing={6} alignment="center">
+            <Image systemName="exclamationmark.triangle.fill" font={13} foregroundStyle="systemRed" />
+            <Text font="caption1" bold foregroundStyle="systemRed">
+              获取失败
+            </Text>
+          </HStack>
+          <Text font="caption2" foregroundStyle="secondaryLabel" lineLimit={3}>
+            {err?.message || "网络请求超时或凭据无效"}
           </Text>
         </VStack>
       )
