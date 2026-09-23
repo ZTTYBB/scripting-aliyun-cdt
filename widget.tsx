@@ -30,8 +30,8 @@ interface AppConfig {
   regionId: string
   ecsInstanceId: string
   trafficThresholdGB: number
+  vpsCutoffReferenceGB: number
   resetDayOfMonth: number
-  autoStopOnExceed: boolean
 }
 
 const STORAGE_KEY = "aliyun_cdt_monitor_config"
@@ -42,9 +42,9 @@ const DEFAULT_CONFIG: AppConfig = {
   accessKeySecret: "",
   regionId: "cn-hongkong",
   ecsInstanceId: "",
-  trafficThresholdGB: 180,
-  resetDayOfMonth: 1,
-  autoStopOnExceed: true
+  trafficThresholdGB: 200,
+  vpsCutoffReferenceGB: 195,
+  resetDayOfMonth: 1
 }
 
 function loadSavedConfig(): AppConfig {
@@ -385,6 +385,8 @@ async function aliyunRequest<T = any>(
 interface WidgetData {
   totalGB: number
   thresholdGB: number
+  vpsCutoffReferenceGB: number
+  cutoffRemainingGB: number
   remainingGB: number
   percentage: number
   daysRemaining: number
@@ -408,6 +410,8 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
   const totalBytes = details.reduce((sum, item) => sum + (item.Traffic || 0), 0)
   const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
   const thresholdGB = config.trafficThresholdGB
+  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || 195
+  const cutoffRemainingGB = Math.max(0, Number((vpsCutoffReferenceGB - totalGB).toFixed(2)))
   const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
   const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
 
@@ -442,11 +446,17 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
     : null
   const todayEstimatedGB = dailyUsage[dailyUsage.length - 1]?.valueGB ?? null
 
-  const color = percentage >= 90 ? "systemRed" : percentage >= 70 ? "systemOrange" : "systemGreen"
+  const color = totalGB >= vpsCutoffReferenceGB
+    ? "systemRed"
+    : totalGB >= vpsCutoffReferenceGB - 15
+      ? "systemOrange"
+      : "systemGreen"
 
   return {
     totalGB,
     thresholdGB,
+    vpsCutoffReferenceGB,
+    cutoffRemainingGB,
     remainingGB,
     percentage,
     daysRemaining,
@@ -478,7 +488,7 @@ function getECSStatusMeta(status: WidgetData["ecsStatus"]): ECSStatusMeta {
     case "Stopping":
       return { label: "停止中", shortLabel: "停止中", color: "systemOrange" }
     case "Stopped":
-      return { label: "节省停机中", shortLabel: "休眠", color: "systemIndigo" }
+      return { label: "已停止", shortLabel: "停止", color: "secondaryLabel" }
     default:
       return { label: "状态未知", shortLabel: "未知", color: "secondaryLabel" }
   }
@@ -696,7 +706,7 @@ function SmallWidgetView({ data }: { data: WidgetData }) {
           size={76}
           lineWidth={7}
           value={data.totalGB.toFixed(2)}
-          caption={`/ ${data.thresholdGB} GB`}
+          caption={`参考 ${data.thresholdGB} GB`}
           subcaption={`${data.percentage.toFixed(1)}%`}
           valueFont={17}
           captionFont={8}
@@ -712,9 +722,9 @@ function SmallWidgetView({ data }: { data: WidgetData }) {
           </Text>
         </VStack>
         <VStack alignment="center" spacing={1} frame={{ maxWidth: Infinity }}>
-          <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel">日均可用</Text>
-          <Text font={9} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} allowsTightening={true} foregroundStyle="label">
-            {data.dailyBudgetGB} GB
+          <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel">距 {data.vpsCutoffReferenceGB} 线</Text>
+          <Text font={9} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} allowsTightening={true} foregroundStyle={data.color}>
+            {data.cutoffRemainingGB.toFixed(1)} GB
           </Text>
         </VStack>
         <VStack alignment="trailing" spacing={1} frame={{ maxWidth: Infinity }}>
@@ -772,7 +782,7 @@ function MediumWidgetView({ data }: { data: WidgetData }) {
           <HStack spacing={10} frame={{ maxWidth: Infinity }} alignment="top">
             <VStack alignment="leading" spacing={2}>
               <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">
-                本月剩余
+                参考余量
               </Text>
               <HStack alignment="bottom" spacing={2}>
                 <Text font={15} bold monospacedDigit lineLimit={1} foregroundStyle="label">
@@ -797,7 +807,7 @@ function MediumWidgetView({ data }: { data: WidgetData }) {
 
           <HStack alignment="center" frame={{ maxWidth: Infinity }}>
             <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel">
-              7 日估算 · 余 {data.daysRemaining} 天
+              VPS 熔断参考 {data.vpsCutoffReferenceGB} GB · 7 日估算
             </Text>
             <Spacer />
             <Text font={9} bold monospacedDigit lineLimit={1} foregroundStyle="label">
@@ -858,7 +868,7 @@ function LargeWidgetView({ data }: { data: WidgetData }) {
         <VStack alignment="leading" spacing={9} frame={{ maxWidth: Infinity }}>
           <HStack alignment="top" frame={{ maxWidth: Infinity }}>
             <VStack alignment="leading" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">本月剩余</Text>
+              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">参考余量</Text>
               <Text font={17} bold monospacedDigit lineLimit={1} foregroundStyle="label">
                 {data.remainingGB.toFixed(2)} GB
               </Text>
@@ -889,10 +899,10 @@ function LargeWidgetView({ data }: { data: WidgetData }) {
           </HStack>
 
           <HStack alignment="bottom" frame={{ maxWidth: Infinity }}>
-            <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">剩余日均可用</Text>
+            <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">VPS 熔断参考线</Text>
             <Spacer />
-            <Text font={15} bold monospacedDigit lineLimit={1} foregroundStyle="label">
-              {data.dailyBudgetGB} GB/天
+            <Text font={15} bold monospacedDigit lineLimit={1} foregroundStyle={data.color}>
+              {data.vpsCutoffReferenceGB} GB · 余 {data.cutoffRemainingGB.toFixed(1)} GB
             </Text>
           </HStack>
         </VStack>
@@ -962,7 +972,7 @@ function AccessoryRectangularView({ data }: { data: WidgetData }) {
           </HStack>
         </HStack>
         <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">
-          剩余 {data.remainingGB.toFixed(1)} GB · {data.daysRemaining} 天重置
+          参考余量 {data.remainingGB.toFixed(1)} GB · VPS 线 {data.vpsCutoffReferenceGB} GB
         </Text>
       </VStack>
     </HStack>
@@ -975,7 +985,7 @@ function AccessoryInlineView({ data }: { data: WidgetData }) {
 
   return (
     <Text lineLimit={1} monospacedDigit>
-      CDT {data.totalGB.toFixed(2)}/{data.thresholdGB}G · {status.shortLabel}
+      CDT {data.totalGB.toFixed(2)}/{data.thresholdGB}G · {data.vpsCutoffReferenceGB}线余{data.cutoffRemainingGB.toFixed(1)}G · {status.shortLabel}
     </Text>
   )
 }

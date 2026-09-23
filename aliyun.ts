@@ -307,10 +307,11 @@ export class AliyunService {
     const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
     const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
 
+    const cutoffReferenceGB = this.config.vpsCutoffReferenceGB
     let statusLevel: "normal" | "warning" | "danger" = "normal"
-    if (percentage >= 90 || totalGB >= thresholdGB) {
+    if (totalGB >= cutoffReferenceGB) {
       statusLevel = "danger"
-    } else if (percentage >= 70) {
+    } else if (totalGB >= cutoffReferenceGB - 15) {
       statusLevel = "warning"
     }
 
@@ -364,103 +365,7 @@ export class AliyunService {
     }
   }
 
-  /**
-   * 3. 启动 ECS 实例
-   */
-  async startECS(instanceId: string = this.config.ecsInstanceId): Promise<boolean> {
-    const current = await this.getECSStatus(instanceId)
-    if (current.status === "Running") {
-      return true
-    }
-    const domain = `ecs.${this.config.regionId}.aliyuncs.com`
-    await aliyunRequest(
-      {
-        domain,
-        action: "StartInstance",
-        version: "2014-05-26",
-        method: "POST",
-        params: {
-          InstanceId: instanceId
-        }
-      },
-      this.config
-    )
-    return true
-  }
-
-  /**
-   * 4. 停止 ECS 实例 (默认软关机)
-   */
-  async stopECS(instanceId: string = this.config.ecsInstanceId, forceStop: boolean = false): Promise<boolean> {
-    const current = await this.getECSStatus(instanceId)
-    if (current.status === "Stopped") {
-      return true
-    }
-    const domain = `ecs.${this.config.regionId}.aliyuncs.com`
-    await aliyunRequest(
-      {
-        domain,
-        action: "StopInstance",
-        version: "2014-05-26",
-        method: "POST",
-        params: {
-          InstanceId: instanceId,
-          ForceStop: forceStop,
-          StoppedMode: "StopCharging"
-        }
-      },
-      this.config
-    )
-    return true
-  }
-
-  /**
-   * 5. 执行熔断检查：超额自动关机保护
-   */
-  async checkAndEnforceThreshold(): Promise<{
-    triggered: boolean
-    traffic: CDTTrafficResult
-    ecs: ECSInstanceInfo
-  }> {
-    const traffic = await this.getCDTTraffic()
-    const ecs = await this.getECSStatus()
-
-    let triggered = false
-    if (this.config.autoStopOnExceed && traffic.totalGB >= this.config.trafficThresholdGB) {
-      if (ecs.status === "Running" || ecs.status === "Starting") {
-        await this.stopECS()
-        triggered = true
-        ecs.status = "Stopping"
-      }
-    }
-
-    return { triggered, traffic, ecs }
-  }
-
-  /**
-   * 6. 重启 ECS 实例
-   */
-  async rebootECS(instanceId: string = this.config.ecsInstanceId, forceStop: boolean = false): Promise<boolean> {
-    const domain = `ecs.${this.config.regionId}.aliyuncs.com`
-    await aliyunRequest(
-      {
-        domain,
-        action: "RebootInstance",
-        version: "2014-05-26",
-        method: "POST",
-        params: {
-          InstanceId: instanceId,
-          ForceStop: forceStop
-        }
-      },
-      this.config
-    )
-    return true
-  }
-
-  /**
-   * 7. 获取账户可用余额 (支持优雅降级，未授权返回 null)
-   */
+  /** 获取账户可用余额 (未授权时返回 null) */
   async getAccountBalance(): Promise<AccountBalanceInfo | null> {
     try {
       const data = await aliyunRequest<{
@@ -499,7 +404,7 @@ export class AliyunService {
   }
 
   /**
-   * 8. 获取当月实时累计消费账单 (支持优雅降级，未授权返回 null)
+   * 8. 获取当月账单查询结果 (数据可能延迟；未授权返回 null)
    */
   async getMonthlyBill(): Promise<MonthlyBillInfo | null> {
     try {
@@ -575,12 +480,11 @@ export class AliyunService {
         return null
       }
 
-      let totalPayment = 0
-      let totalGross = 0
       let allProductsEffective = 0
       let ecsTotal = 0
       let eipTotal = 0
       let cdtTotal = 0
+      let hasInfrastructureItems = false
       let outstanding = 0
       let currency = "CNY"
 
@@ -593,14 +497,12 @@ export class AliyunService {
         let effective = 0
         if (it.PretaxAmount !== undefined && it.PretaxAmount !== null && it.PretaxAmount !== "") {
           effective = Number(it.PretaxAmount) || 0
-        } else if (pay > 0) {
-          effective = pay
+        } else if (it.PaymentAmount !== undefined && it.PaymentAmount !== null && it.PaymentAmount !== "") {
+          effective = Number(it.PaymentAmount) || 0
         } else {
           effective = gross
         }
 
-        totalPayment += pay
-        totalGross += gross
         allProductsEffective += effective
         outstanding += Number(it.OutstandingAmount || 0)
         if (it.Currency) currency = it.Currency
@@ -610,6 +512,7 @@ export class AliyunService {
         const isEip = code === "eip" || code === "cbwp" || code.includes("eip") || code.includes("cbwp") || name.includes("弹性公网") || name.includes("EIP") || name.includes("公网IP") || name.includes("共享带宽")
         const isCdt = code === "cdt" || code.includes("cdt") || name.includes("云数据传输") || name.includes("CDT")
 
+        if (isEcs || isEip || isCdt) hasInfrastructureItems = true
         if (isEcs) {
           ecsTotal += effective
         } else if (isEip) {
@@ -619,11 +522,11 @@ export class AliyunService {
         }
       }
 
-      // 当月消费严格对齐阿里云控制台账单中心：优先采用各项产品实际累计（如 ECS ¥0.40 + EIP ¥0.04 = ¥0.44）
+      // 保留接口返回的零金额；仅在没有可分类产品时使用全产品合计。
       const infrastructureTotal = ecsTotal + eipTotal + cdtTotal
-      const finalPayment = infrastructureTotal > 0
+      const finalPayment = hasInfrastructureItems
         ? infrastructureTotal
-        : (allProductsEffective > 0 ? allProductsEffective : (totalPayment > 0 ? totalPayment : totalGross))
+        : allProductsEffective
 
       const formatDaily = (amt: number): string => {
         if (amt <= 0) return "0.00"
@@ -631,7 +534,7 @@ export class AliyunService {
         return amt.toFixed(2)
       }
 
-      // 真实读取最近各日期的官方实际账单（QueryAccountBill + DAILY，真实 API 读取，绝非推算）
+      // 查询最近日期的每日账单明细；月内数据可能延迟。
       const ecsDailyList: DailyExpenseItem[] = []
       const eipDailyList: DailyExpenseItem[] = []
       const daysCount = Math.min(7, currentDay)
@@ -686,7 +589,7 @@ export class AliyunService {
                 let eff = 0
                 if (it.PretaxAmount !== undefined && it.PretaxAmount !== null && it.PretaxAmount !== "") {
                   eff = Number(it.PretaxAmount) || 0
-                } else if (p > 0) {
+                } else if (it.PaymentAmount !== undefined && it.PaymentAmount !== null && it.PaymentAmount !== "") {
                   eff = p
                 } else {
                   eff = g

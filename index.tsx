@@ -1,12 +1,12 @@
 /**
  * ============================================================================
- * 阿里云 CDT 流量与 ECS 实例智控控制台 (iOS Scripting Console)
+ * 阿里云 CDT 流量与 ECS 状态只读控制台 (iOS Scripting Console)
  * 文件名: index.tsx
  * ============================================================================
  * 通用版特性：
  * 1. 零硬编码：完全通过 UI 设置面板录入，自动持久化至本地 Storage
- * 2. 交互式控制台：实时 CDT 流量环/进度条、ECS 运行状态、一键开机/关机
- * 3. 完整设置界面：随时修改 AK/SK、地域、ECS 实例 ID、阈值及自动关机开关
+ * 2. 交互式控制台：实时 CDT 流量环/进度条与 ECS 只读状态
+ * 3. 完整设置界面：随时修改 AK/SK、地域、ECS 实例 ID 与流量参考线
  * 4. 控制台实时运行日志记录
  */
 
@@ -26,7 +26,6 @@ import {
   Spacer,
   Divider,
   TextField,
-  Toggle,
   Toolbar,
   ToolbarItem,
   useState,
@@ -36,7 +35,7 @@ import {
 
 // ==================== 1. 本地存储配置管理 ====================
 
-const APP_VERSION = "1.5.0"
+const APP_VERSION = "1.6.0"
 
 interface AppConfig {
   accessKeyId: string
@@ -44,8 +43,8 @@ interface AppConfig {
   regionId: string
   ecsInstanceId: string
   trafficThresholdGB: number
+  vpsCutoffReferenceGB: number
   resetDayOfMonth: number
-  autoStopOnExceed: boolean
 }
 
 const STORAGE_KEY = "aliyun_cdt_monitor_config"
@@ -56,8 +55,8 @@ const DEFAULT_CONFIG: AppConfig = {
   regionId: "cn-hongkong",
   ecsInstanceId: "",
   trafficThresholdGB: 200,
-  resetDayOfMonth: 1,
-  autoStopOnExceed: false
+  vpsCutoffReferenceGB: 195,
+  resetDayOfMonth: 1
 }
 
 function loadSavedConfig(): AppConfig {
@@ -269,6 +268,7 @@ export interface DailyExpenseItem {
   amount: string
   isToday?: boolean
   settled?: boolean
+  available?: boolean
 }
 
 export interface MonthlyBillInfo {
@@ -283,9 +283,15 @@ export interface MonthlyBillInfo {
   eipDailyList: DailyExpenseItem[]
 }
 
+function isBillQueryAvailable(response: any): boolean {
+  return Boolean(response?.Data && response?.Success === true && response?.Code === "Success")
+}
+
 interface ConsoleData {
   totalGB: number
   thresholdGB: number
+  vpsCutoffReferenceGB: number
+  cutoffRemainingGB: number
   remainingGB: number
   percentage: number
   daysRemaining: number
@@ -297,6 +303,7 @@ interface ConsoleData {
   updatedAt?: string | Date
   financialBalance?: AccountBalanceInfo | null
   financialBill?: MonthlyBillInfo | null
+  financialBillStatus: "available" | "unavailable"
 }
 
 const SNAPSHOT_STORAGE_KEY = "aliyun_cdt_dashboard_cache"
@@ -347,6 +354,8 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   const totalBytes = details.reduce((sum, item) => sum + (item.Traffic || 0), 0)
   const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
   const thresholdGB = config.trafficThresholdGB
+  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
+  const cutoffRemainingGB = Math.max(0, Number((vpsCutoffReferenceGB - totalGB).toFixed(2)))
   const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
   const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
 
@@ -377,6 +386,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   // 5. 资产与消费查询 (优雅降级，未授权时不中断主流程)
   let financialBalance: AccountBalanceInfo | null = null
   let financialBill: MonthlyBillInfo | null = null
+  let financialBillStatus: "available" | "unavailable" = "unavailable"
 
   try {
     const balRes = await aliyunRequest<{
@@ -430,6 +440,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
       BillingCycle: cycle
     }).catch(() => null)
 
+    if (isBillQueryAvailable(overviewRes)) financialBillStatus = "available"
     if (overviewRes?.Data?.Items?.Item && overviewRes.Data.Items.Item.length > 0) {
       billItems = overviewRes.Data.Items.Item
     } else {
@@ -445,38 +456,34 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
         IsGroupByProduct: true
       }).catch(() => null)
 
+      if (isBillQueryAvailable(billRes)) financialBillStatus = "available"
       if (billRes?.Data?.Items?.Item && billRes.Data.Items.Item.length > 0) {
         billItems = billRes.Data.Items.Item
       }
     }
 
-    if (billItems.length > 0) {
-      let totalPayment = 0
-      let totalGross = 0
       let allProductsEffective = 0
       let ecsTotal = 0
       let eipTotal = 0
       let cdtTotal = 0
+      let hasInfrastructureItems = false
       let outstanding = 0
       let currency = "CNY"
 
       for (const it of billItems) {
         const code = String(it.PipCode || it.ProductCode || "").toLowerCase()
         const name = String(it.ProductName || "")
-        const pay = Number(it.PaymentAmount || 0)
         const gross = Number(it.PretaxGrossAmount || 0)
         // 关键：必须优先取 PretaxAmount（实际应付金额：已扣减抢占式竞价折扣、优惠券，如抢占式单日 ¥0.13，月度 ¥0.40）
         let effective = 0
         if (it.PretaxAmount !== undefined && it.PretaxAmount !== null && it.PretaxAmount !== "") {
           effective = Number(it.PretaxAmount) || 0
-        } else if (pay > 0) {
-          effective = pay
+        } else if (it.PaymentAmount !== undefined && it.PaymentAmount !== null && it.PaymentAmount !== "") {
+          effective = Number(it.PaymentAmount) || 0
         } else {
           effective = gross
         }
 
-        totalPayment += pay
-        totalGross += gross
         allProductsEffective += effective
         outstanding += Number(it.OutstandingAmount || 0)
         if (it.Currency) currency = it.Currency
@@ -485,6 +492,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
         const isEip = code === "eip" || code === "cbwp" || code.includes("eip") || code.includes("cbwp") || name.includes("弹性公网") || name.includes("EIP") || name.includes("公网IP") || name.includes("共享带宽")
         const isCdt = code === "cdt" || code.includes("cdt") || name.includes("云数据传输") || name.includes("CDT")
 
+        if (isEcs || isEip || isCdt) hasInfrastructureItems = true
         if (isEcs) {
           ecsTotal += effective
         } else if (isEip) {
@@ -494,11 +502,11 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
         }
       }
 
-      // 当月消费严格对齐阿里云控制台账单中心：优先采用各项产品实际累计（如 ECS ¥0.40 + EIP ¥0.04 = ¥0.44）
+      // 保留接口返回的零金额；仅在没有可分类产品时使用全产品合计。
       const infrastructureTotal = ecsTotal + eipTotal + cdtTotal
-      const finalPayment = infrastructureTotal > 0
+      const finalPayment = hasInfrastructureItems
         ? infrastructureTotal
-        : (allProductsEffective > 0 ? allProductsEffective : (totalPayment > 0 ? totalPayment : totalGross))
+        : allProductsEffective
 
       const formatDaily = (amt: number): string => {
         if (amt <= 0) return "0.00"
@@ -506,7 +514,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
         return amt.toFixed(2)
       }
 
-      // 真实读取最近各日期的官方实际账单（QueryAccountBill + DAILY，真实 API 读取，绝非推算）
+      // 查询最近日期的每日账单明细；月内数据可能延迟。
       const ecsDailyList: DailyExpenseItem[] = []
       const eipDailyList: DailyExpenseItem[] = []
       const daysCount = Math.min(7, currentDay)
@@ -553,7 +561,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
                 let eff = 0
                 if (it.PretaxAmount !== undefined && it.PretaxAmount !== null && it.PretaxAmount !== "") {
                   eff = Number(it.PretaxAmount) || 0
-                } else if (p > 0) {
+                } else if (it.PaymentAmount !== undefined && it.PaymentAmount !== null && it.PaymentAmount !== "") {
                   eff = p
                 } else {
                   eff = g
@@ -579,7 +587,8 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
                 isToday: q.isToday,
                 ecsAmount: formatDaily(dEcs),
                 eipAmount: formatDaily(dEip),
-                settled: dayItems.length > 0
+                settled: dayItems.length > 0,
+                available: isBillQueryAvailable(dayRes)
               }
             } catch {
               return {
@@ -587,42 +596,48 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
                 isToday: q.isToday,
                 ecsAmount: "0.00",
                 eipAmount: "0.00",
-                settled: false
+                settled: false,
+                available: false
               }
             }
           })
         )
 
         for (const r of dailyResults) {
-          ecsDailyList.push({ date: r.date, amount: r.ecsAmount, isToday: r.isToday, settled: r.settled })
-          eipDailyList.push({ date: r.date, amount: r.eipAmount, isToday: r.isToday, settled: r.settled })
+          ecsDailyList.push({ date: r.date, amount: r.ecsAmount, isToday: r.isToday, settled: r.settled, available: r.available })
+          eipDailyList.push({ date: r.date, amount: r.eipAmount, isToday: r.isToday, settled: r.settled, available: r.available })
         }
       } catch {
         for (const q of dateQueries) {
-          ecsDailyList.push({ date: q.displayDate, amount: "0.00", isToday: q.isToday, settled: false })
-          eipDailyList.push({ date: q.displayDate, amount: "0.00", isToday: q.isToday, settled: false })
+          ecsDailyList.push({ date: q.displayDate, amount: "0.00", isToday: q.isToday, settled: false, available: false })
+          eipDailyList.push({ date: q.displayDate, amount: "0.00", isToday: q.isToday, settled: false, available: false })
         }
       }
 
-      financialBill = {
-        billingCycle: cycle,
-        paymentAmount: finalPayment.toFixed(2),
-        outstandingAmount: outstanding.toFixed(2),
-        currency,
-        ecsAmount: ecsTotal.toFixed(2),
-        eipAmount: eipTotal.toFixed(2),
-        cdtAmount: cdtTotal.toFixed(2),
-        ecsDailyList,
-        eipDailyList
-      }
+    financialBill = {
+      billingCycle: cycle,
+      paymentAmount: finalPayment.toFixed(2),
+      outstandingAmount: outstanding.toFixed(2),
+      currency,
+      ecsAmount: ecsTotal.toFixed(2),
+      eipAmount: eipTotal.toFixed(2),
+      cdtAmount: cdtTotal.toFixed(2),
+      ecsDailyList,
+      eipDailyList
     }
   } catch {}
 
-  const color = percentage >= 90 ? "systemRed" : percentage >= 70 ? "systemOrange" : "systemGreen"
+  const color = totalGB >= vpsCutoffReferenceGB
+    ? "systemRed"
+    : totalGB >= vpsCutoffReferenceGB - 15
+      ? "systemOrange"
+      : "systemGreen"
 
   return {
     totalGB,
     thresholdGB,
+    vpsCutoffReferenceGB,
+    cutoffRemainingGB,
     remainingGB,
     percentage,
     daysRemaining,
@@ -633,22 +648,26 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
     color,
     updatedAt: now.toISOString(),
     financialBalance,
-    financialBill
+    financialBill,
+    financialBillStatus
   }
 }
 
-function getTrafficHealthMeta(percentage: number, monthTimeProgress: number): {
+function getTrafficHealthMeta(totalGB: number, cutoffReferenceGB: number, percentage: number, monthTimeProgress: number): {
   label: string
   color: string
   icon: string
 } {
-  if (percentage >= 90) {
-    return { label: "严重超标 · 存在熔断风险", color: "systemRed", icon: "exclamationmark.octagon.fill" }
+  if (totalGB >= cutoffReferenceGB) {
+    return { label: "已达到 VPS 熔断参考线（仅展示）", color: "systemRed", icon: "exclamationmark.octagon.fill" }
+  }
+  if (totalGB >= cutoffReferenceGB - 15) {
+    return { label: "接近 VPS 熔断参考线（仅展示）", color: "systemOrange", icon: "exclamationmark.circle.fill" }
   }
   if (percentage > monthTimeProgress + 15) {
-    return { label: "消耗偏快 · 超前时间进度", color: "systemOrange", icon: "exclamationmark.circle.fill" }
+    return { label: "月用量参考进度超前", color: "systemOrange", icon: "exclamationmark.circle.fill" }
   }
-  return { label: "用量健康 · 处于安全预算内", color: "systemGreen", icon: "checkmark.circle.fill" }
+  return { label: "月用量处于本地参考进度内", color: "systemGreen", icon: "checkmark.circle.fill" }
 }
 
 function humanizeAliyunError(rawMessage: string): string {
@@ -672,18 +691,6 @@ function humanizeAliyunError(rawMessage: string): string {
     return "当前地域实例资源库存紧张，无法启动。"
   }
   return rawMessage
-}
-
-async function executeECSAction(action: "start" | "stop" | "reboot", config: AppConfig) {
-  const apiAction = action === "start" ? "StartInstance" : action === "stop" ? "StopInstance" : "RebootInstance"
-  const params: Record<string, any> = {
-    InstanceId: config.ecsInstanceId.trim(),
-    ForceStop: false
-  }
-  if (action === "stop") {
-    params.StoppedMode = "StopCharging"
-  }
-  await aliyunRequest(`ecs.${config.regionId}.aliyuncs.com`, apiAction, "2014-05-26", config, params)
 }
 
 function splitLogLine(log: string): { time: string; message: string } {
@@ -762,8 +769,10 @@ function SettingsView({
   const [sk, setSk] = useState(currentConfig.accessKeySecret || "")
   const [region, setRegion] = useState(currentConfig.regionId || "cn-hongkong")
   const [ecsId, setEcsId] = useState(currentConfig.ecsInstanceId || "")
-  const [threshold, setThreshold] = useState(String(currentConfig.trafficThresholdGB || 180))
-  const [autoStop, setAutoStop] = useState(currentConfig.autoStopOnExceed ?? true)
+  const [threshold, setThreshold] = useState(String(currentConfig.trafficThresholdGB || 200))
+  const [cutoffReference, setCutoffReference] = useState(
+    String(currentConfig.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB)
+  )
   const [errorNotice, setErrorNotice] = useState<string | null>(null)
   const [successNotice, setSuccessNotice] = useState<string | null>(null)
 
@@ -905,7 +914,12 @@ function SettingsView({
     }
     const numThreshold = Number(threshold)
     if (!Number.isFinite(numThreshold) || numThreshold <= 0) {
-      setErrorNotice("流量阈值必须是大于 0 的数字。")
+      setErrorNotice("月用量参考值必须是大于 0 的数字。")
+      return
+    }
+    const numCutoffReference = Number(cutoffReference)
+    if (!Number.isFinite(numCutoffReference) || numCutoffReference <= 0) {
+      setErrorNotice("VPS 熔断参考线必须是大于 0 的数字。")
       return
     }
     const newCfg: AppConfig = {
@@ -914,8 +928,8 @@ function SettingsView({
       regionId: region.trim() || "cn-hongkong",
       ecsInstanceId: ecsId.trim(),
       trafficThresholdGB: numThreshold,
-      resetDayOfMonth: 1,
-      autoStopOnExceed: autoStop
+      vpsCutoffReferenceGB: numCutoffReference,
+      resetDayOfMonth: 1
     }
     saveConfigToStorage(newCfg)
     onSave(newCfg)
@@ -1081,7 +1095,7 @@ function SettingsView({
               label={ak ? "修改" : "设置"}
               accessibilityLabel="设置 AccessKey ID"
               action={() =>
-                promptField("设置 AccessKey ID", "请输入阿里云 AccessKey ID (LTAI 开头)", ak, "LTAI5xxxxxxxxxxx", setAk)
+                promptField("设置 AccessKey ID", "请输入阿里云 AccessKey ID (LTAI 开头)", ak, "LTAI...", setAk)
               }
             />
           </HStack>
@@ -1115,7 +1129,7 @@ function SettingsView({
           </HStack>
         </VStack>
         <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-          凭据仅加密存储于您 iPhone 本机的隔离沙盒内，绝不上云或外泄。
+          凭据保存在 Scripting 本机 Storage；此项目未实现应用层加密，请使用最小权限 RAM 凭据。
         </Text>
 
         {/* Section 3: 目标实例与地域 */}
@@ -1186,10 +1200,10 @@ function SettingsView({
           确保 Region ID 与 ECS 实例所在的物理地域一致。
         </Text>
 
-        {/* Section 4: 流量风控策略 */}
+        {/* Section 4: 只读流量参考值 */}
         <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
           <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
-            流量风控策略
+            流量参考值
           </Text>
         </HStack>
         <VStack
@@ -1198,7 +1212,7 @@ function SettingsView({
           shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
           spacing={0}
         >
-          {/* CDT 警戒阈值 */}
+          {/* 本地月用量参考值 */}
           <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
@@ -1209,24 +1223,24 @@ function SettingsView({
             </ZStack>
             <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
               <Text font="subheadline" bold foregroundStyle="label">
-                CDT 流量警戒阈值
+                本地月用量参考值
               </Text>
               <Text font="caption2" foregroundStyle="systemOrange">
-                {threshold || "180"} GB / 月
+                {threshold || "200"} GB / 月
               </Text>
             </VStack>
             <SettingsActionButton
               label="修改"
-              accessibilityLabel="设置 CDT 流量警戒阈值"
+              accessibilityLabel="设置本地月用量参考值"
               action={() =>
-                promptField("设置 CDT 流量警戒阈值 (GB)", "输入当月出网流量警戒值", threshold, "180", setThreshold)
+                promptField("本地月用量参考值 (GB)", "仅作本地用量参考，不代表阿里云账号完整免费额度余额，也不会触发 ECS 操作", threshold, "200", setThreshold)
               }
             />
           </HStack>
 
           <Divider padding={{ leading: 64 }} />
 
-          {/* 自动熔断关机开关 */}
+          {/* VPS 熔断线仅供本地对照 */}
           <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
@@ -1237,20 +1251,23 @@ function SettingsView({
             </ZStack>
             <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
               <Text font="subheadline" bold foregroundStyle="label">
-                手机端自动熔断关机
+                VPS 熔断参考线
               </Text>
               <Text font="caption2" foregroundStyle="secondaryLabel">
-                已由 VPS 守护，建议保持关闭（纯只读看板）
+                {cutoffReference} GB · 仅展示，不控制 ECS
               </Text>
             </VStack>
-            <Toggle
-              isOn={autoStop}
-              onToggle={() => setAutoStop(!autoStop)}
+            <SettingsActionButton
+              label="修改"
+              accessibilityLabel="设置 VPS 熔断参考线"
+              action={() =>
+                promptField("VPS 熔断参考线 (GB)", "按 VPS 脚本阈值手动填写；此值只用于手机告警，不会同步或关机", cutoffReference, cutoffReference, setCutoffReference)
+              }
             />
           </HStack>
         </VStack>
         <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 16 }}>
-          VPS 托管纯统计模式：保活与熔断由 VPS 独立负责，手机端作为纯统计看板，避免两端重复关机冲突。
+          VPS 独立负责保活与熔断。手机只查询阿里云；此处的参考线不会与 VPS 同步。
         </Text>
 
         {/* 底部保存按钮 (Apple iOS 26 Liquid Glass Capsule) */}
@@ -1286,7 +1303,7 @@ function SettingsView({
             </Text>
           </HStack>
           <Text font={11} foregroundStyle="tertiaryLabel">
-            BSS 官方实时账单 · Build 2026.09.22
+            BSS 账单查询 · Build 2026.09.23
           </Text>
         </VStack>
       </VStack>
@@ -1302,6 +1319,14 @@ function getCachedConsoleSnapshot(): { data: ConsoleData | null; lastUpdated: Da
       const raw = Storage.get(SNAPSHOT_STORAGE_KEY)
       if (raw) {
         const parsed: ConsoleData = typeof raw === "string" ? JSON.parse(raw) : raw
+        if (parsed.financialBillStatus !== "available") {
+          parsed.financialBillStatus = "unavailable"
+        }
+        for (const list of [parsed.financialBill?.ecsDailyList, parsed.financialBill?.eipDailyList]) {
+          for (const item of list || []) {
+            if (typeof item.available !== "boolean") item.available = false
+          }
+        }
         const ts = parsed.updatedAt ? new Date(parsed.updatedAt) : null
         return { data: parsed, lastUpdated: ts }
       }
@@ -1317,7 +1342,6 @@ function ConsoleView() {
   const [data, setData] = useState<ConsoleData | null>(initialCache.data)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(initialCache.lastUpdated)
   const [loading, setLoading] = useState(false)
-  const [actionLoading, setActionLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [isPrivacy, setIsPrivacy] = useState<boolean>(() => {
@@ -1370,28 +1394,34 @@ function ConsoleView() {
     } catch {}
 
     const list = data?.financialBill?.ecsDailyList || []
-    const total = isPrivacy ? "****" : `¥${data?.financialBill?.ecsAmount || "0.00"}`
+    const total = data?.financialBillStatus === "unavailable"
+      ? "暂不可用"
+      : isPrivacy
+        ? "****"
+        : `¥${data?.financialBill?.ecsAmount || "0.00"}`
     const lines = list.map(item => {
-      const amt = isPrivacy ? "****" : `¥${item.amount}`
+      const amt = item.available === false ? "—" : isPrivacy ? "****" : `¥${item.amount}`
       let tag = ""
-      if (item.isToday) {
-        tag = parseFloat(item.amount) > 0 ? " (今日计费中)" : " (今日计费中，次日出账)"
-      } else if (item.settled) {
-        tag = " (官方已出账)"
+      if (item.available === false) {
+        tag = " (查询失败)"
+      } else if (item.isToday) {
+        tag = parseFloat(item.amount) > 0 ? " (今日查询结果)" : " (当前查询为0，非最终账单)"
       } else {
-        tag = " (无费用)"
+        tag = parseFloat(item.amount) > 0 ? " (查询到的费用)" : " (当前查询为0，非最终账单)"
       }
       return `📅 ${item.date}: ${amt}${tag}`
     })
 
     const msg = [
       `ECS 实例 ID: ${config.ecsInstanceId}`,
-      `本月官方累计账单: ${total}`,
+      `本月账单查询结果: ${total}`,
       "",
-      "【官方每日实际账单】",
+      "【每日账单查询结果（可能延迟）】",
       lines.length > 0 ? lines.join("\n") : "暂无每日明细数据",
       "",
-      "注：数据直接读取自阿里云账单中心（BSS OpenAPI），无任何人工估算。"
+      data?.financialBillStatus === "unavailable"
+        ? "账单接口暂不可用，请检查 BSS 权限或稍后刷新。"
+        : "月内账单数据有延迟且仅供参考，最终金额以阿里云账单中心出账结果为准。"
     ].join("\n")
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
@@ -1410,28 +1440,34 @@ function ConsoleView() {
     } catch {}
 
     const list = data?.financialBill?.eipDailyList || []
-    const total = isPrivacy ? "****" : `¥${data?.financialBill?.eipAmount || "0.00"}`
+    const total = data?.financialBillStatus === "unavailable"
+      ? "暂不可用"
+      : isPrivacy
+        ? "****"
+        : `¥${data?.financialBill?.eipAmount || "0.00"}`
     const lines = list.map(item => {
-      const amt = isPrivacy ? "****" : `¥${item.amount}`
+      const amt = item.available === false ? "—" : isPrivacy ? "****" : `¥${item.amount}`
       let tag = ""
-      if (item.isToday) {
-        tag = parseFloat(item.amount) > 0 ? " (今日计费中)" : " (今日计费中，次日出账)"
-      } else if (item.settled) {
-        tag = " (官方已出账)"
+      if (item.available === false) {
+        tag = " (查询失败)"
+      } else if (item.isToday) {
+        tag = parseFloat(item.amount) > 0 ? " (今日查询结果)" : " (当前查询为0，非最终账单)"
       } else {
-        tag = " (无费用)"
+        tag = parseFloat(item.amount) > 0 ? " (查询到的费用)" : " (当前查询为0，非最终账单)"
       }
       return `📅 ${item.date}: ${amt}${tag}`
     })
 
     const msg = [
       `公网 IP: ${data?.publicIp || "弹性公网 IP"}`,
-      `本月官方累计费用: ${total}`,
+      `本月账单查询结果: ${total}`,
       "",
-      "【官方每日实际账单】",
+      "【每日账单查询结果（可能延迟）】",
       lines.length > 0 ? lines.join("\n") : "暂无每日明细数据",
       "",
-      "注：数据直接读取自阿里云账单中心（BSS OpenAPI），无任何人工估算。"
+      data?.financialBillStatus === "unavailable"
+        ? "账单接口暂不可用，请检查 BSS 权限或稍后刷新。"
+        : "月内账单数据有延迟且仅供参考，最终金额以阿里云账单中心出账结果为准。"
     ].join("\n")
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
@@ -1483,85 +1519,6 @@ function ConsoleView() {
     }
   }, [])
 
-  const handleAction = async (type: "start" | "stop" | "reboot") => {
-    setActionLoading(true)
-    const actionName = type === "start" ? "开机启动" : type === "stop" ? "停止关机" : "重启实例"
-    appendLog(`正在下发 ${actionName} 指令...`)
-
-    // 乐观立即反馈：先在界面上把状态置为过渡态
-    const interimStatus = type === "stop" ? "Stopping" : "Starting"
-    setData(prev => (prev ? { ...prev, ecsStatus: interimStatus } : null))
-
-    try {
-      if (typeof Haptic !== "undefined" && (Haptic as any)?.impact) {
-        ;(Haptic as any).impact("medium")
-      }
-      await executeECSAction(type, config)
-      appendLog(`${actionName} 请求已受理，等待 ECS 状态机响应...`)
-
-      // 延迟 2.5 秒执行平滑二次同步，确保捕获状态机翻转
-      setTimeout(async () => {
-        try {
-          await loadData(config)
-        } catch {}
-      }, 2500)
-    } catch (err: any) {
-      if (typeof Haptic !== "undefined" && (Haptic as any)?.notification) {
-        ;(Haptic as any).notification("error")
-      }
-      const msg = humanizeAliyunError(err?.message || "操作失败")
-      setErrorMessage(msg)
-      appendLog(`${actionName} 失败: ${msg}`)
-      await loadData(config)
-    } finally {
-      setActionLoading(false)
-    }
-  }
-
-  // 二次确认关机弹窗防误触！
-  const confirmStop = async () => {
-    if (typeof Dialog !== "undefined" && Dialog.actionSheet) {
-      const selectedIndex = await Dialog.actionSheet({
-        title: "⚠️ 确认停止 ECS 实例？",
-        message: `实例 ID: ${config.ecsInstanceId}\n\n停止后服务器将立即断网下线，所有正在运行的网站与服务将暂停访问。确定关机吗？`,
-        cancelButton: true,
-        actions: [
-          {
-            label: "确认停止实例 (关机)",
-            destructive: true
-          }
-        ]
-      })
-      if (selectedIndex === 0) {
-        await handleAction("stop")
-      }
-    } else {
-      await handleAction("stop")
-    }
-  }
-
-  // 二次确认重启弹窗防误触！
-  const confirmReboot = async () => {
-    if (typeof Dialog !== "undefined" && Dialog.actionSheet) {
-      const selectedIndex = await Dialog.actionSheet({
-        title: "⚠️ 确认重启 ECS 实例？",
-        message: `实例 ID: ${config.ecsInstanceId}\n\n重启期间云服务器将短暂断开连接并在数十秒后自动恢复就绪。确定要立即重启吗？`,
-        cancelButton: true,
-        actions: [
-          {
-            label: "确认重启实例",
-            destructive: true
-          }
-        ]
-      })
-      if (selectedIndex === 0) {
-        await handleAction("reboot")
-      }
-    } else {
-      await handleAction("reboot")
-    }
-  }
-
   // 1. 如果正在打开设置页
   if (showSettings) {
     return (
@@ -1579,10 +1536,10 @@ function ConsoleView() {
     )
   }
 
-  const isRunning = data?.ecsStatus === "Running"
   const isStarting = data?.ecsStatus === "Starting"
   const isStopping = data?.ecsStatus === "Stopping"
   const isTransitional = isStarting || isStopping
+  const isRunning = data?.ecsStatus === "Running"
   const isStopped = data?.ecsStatus === "Stopped"
 
   const statusColor = isRunning
@@ -1616,7 +1573,7 @@ function ConsoleView() {
     : data?.ecsStatus === "Running"
       ? "运行中"
       : data?.ecsStatus === "Stopped"
-        ? "节省停机中"
+        ? "已停止"
         : data?.ecsStatus === "Starting"
           ? "启动中"
           : data?.ecsStatus === "Stopping"
@@ -1640,7 +1597,12 @@ function ConsoleView() {
   const currentDay = now.getDate()
   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
   const monthTimeProgress = data?.monthTimeProgress ?? Math.min(100, Math.max(1, Number(((currentDay / lastDay) * 100).toFixed(1))))
-  const healthMeta = data ? getTrafficHealthMeta(data.percentage, monthTimeProgress) : null
+  const cutoffReferenceGB =
+    data?.vpsCutoffReferenceGB || config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
+  const cutoffRemainingGB = data?.cutoffRemainingGB ?? Math.max(0, cutoffReferenceGB - (data?.totalGB || 0))
+  const healthMeta = data
+    ? getTrafficHealthMeta(data.totalGB, cutoffReferenceGB, data.percentage, monthTimeProgress)
+    : null
 
   // 2. 主控制台展示 (Apple iOS 26 Liquid Glass Architecture)
   return (
@@ -1667,7 +1629,7 @@ function ConsoleView() {
               </ZStack>
               <VStack alignment="leading" spacing={1}>
                 <Text font="headline" bold foregroundStyle="label">
-                  阿里云 CDT 智控台
+                  阿里云 CDT 监控
                 </Text>
                 <Text font={10} foregroundStyle="secondaryLabel">
                   {loading
@@ -1683,7 +1645,7 @@ function ConsoleView() {
               {/* 全局刷新按钮 */}
               <Button
                 action={() => loadData(config)}
-                disabled={loading || actionLoading}
+                disabled={loading}
                 buttonStyle="plain"
                 accessibilityLabel="刷新数据"
               >
@@ -1857,178 +1819,13 @@ function ConsoleView() {
 
             <Divider padding={{ horizontal: 16 }} />
 
-            {/* 开关机与重启控制按钮行 (Apple iOS 26 Liquid Glass Capsules 三核控制) */}
-            <HStack
-              spacing={8}
-              padding={{ horizontal: 16, vertical: 14 }}
-              frame={{ maxWidth: Infinity, alignment: "center" }}
-            >
-              {/* 停止实例按钮 */}
-              <Button
-                action={confirmStop}
-                disabled={!isRunning || actionLoading}
-                buttonStyle="plain"
-                accessibilityLabel={actionLoading ? "正在停止实例" : "停止实例"}
-                frame={{
-                  maxWidth: Infinity,
-                  minHeight: 44,
-                  idealHeight: 44,
-                  alignment: "center"
-                }}
-              >
-                <HStack
-                  spacing={5}
-                  alignment="center"
-                  frame={{
-                    maxWidth: Infinity,
-                    minHeight: 44,
-                    idealHeight: 44,
-                    alignment: "center"
-                  }}
-                  background={isRunning && !actionLoading ? "rgba(255, 59, 48, 0.09)" : "systemGray6"}
-                  border={
-                    isRunning && !actionLoading
-                      ? { style: "rgba(255, 59, 48, 0.25)", width: 0.75 }
-                      : { style: "systemGray4", width: 0.75 }
-                  }
-                  clipShape={{ type: "capsule" }}
-                  shadow={
-                    isRunning && !actionLoading
-                      ? { color: "rgba(255, 59, 48, 0.15)", radius: 6, x: 0, y: 2 }
-                      : undefined
-                  }
-                  {...(isRunning && !actionLoading ? liquidGlass(true) : {})}
-                >
-                  <Image
-                    systemName="power"
-                    font={13}
-                    fontWeight="bold"
-                    foregroundStyle={isRunning && !actionLoading ? "systemRed" : "secondaryLabel"}
-                  />
-                  <Text
-                    font={13}
-                    bold={isRunning && !actionLoading}
-                    foregroundStyle={isRunning && !actionLoading ? "systemRed" : "secondaryLabel"}
-                    lineLimit={1}
-                  >
-                    停止
-                  </Text>
-                </HStack>
-              </Button>
-
-              {/* 重启实例按钮 */}
-              <Button
-                action={confirmReboot}
-                disabled={!isRunning || actionLoading}
-                buttonStyle="plain"
-                accessibilityLabel={actionLoading ? "正在重启实例" : "重启实例"}
-                frame={{
-                  maxWidth: Infinity,
-                  minHeight: 44,
-                  idealHeight: 44,
-                  alignment: "center"
-                }}
-              >
-                <HStack
-                  spacing={5}
-                  alignment="center"
-                  frame={{
-                    maxWidth: Infinity,
-                    minHeight: 44,
-                    idealHeight: 44,
-                    alignment: "center"
-                  }}
-                  background={isRunning && !actionLoading ? "rgba(255, 149, 0, 0.10)" : "systemGray6"}
-                  border={
-                    isRunning && !actionLoading
-                      ? { style: "rgba(255, 149, 0, 0.28)", width: 0.75 }
-                      : { style: "systemGray4", width: 0.75 }
-                  }
-                  clipShape={{ type: "capsule" }}
-                  shadow={
-                    isRunning && !actionLoading
-                      ? { color: "rgba(255, 149, 0, 0.16)", radius: 6, x: 0, y: 2 }
-                      : undefined
-                  }
-                  {...(isRunning && !actionLoading ? liquidGlass(true) : {})}
-                >
-                  <Image
-                    systemName="arrow.triangle.2.circlepath"
-                    font={13}
-                    fontWeight="bold"
-                    foregroundStyle={isRunning && !actionLoading ? "systemOrange" : "secondaryLabel"}
-                  />
-                  <Text
-                    font={13}
-                    bold={isRunning && !actionLoading}
-                    foregroundStyle={isRunning && !actionLoading ? "systemOrange" : "secondaryLabel"}
-                    lineLimit={1}
-                  >
-                    重启
-                  </Text>
-                </HStack>
-              </Button>
-
-              {/* 启动实例按钮 */}
-              <Button
-                action={() => handleAction("start")}
-                disabled={isRunning || actionLoading}
-                buttonStyle="plain"
-                accessibilityLabel={actionLoading ? "正在启动实例" : "启动实例"}
-                frame={{
-                  maxWidth: Infinity,
-                  minHeight: 44,
-                  idealHeight: 44,
-                  alignment: "center"
-                }}
-              >
-                <HStack
-                  spacing={5}
-                  alignment="center"
-                  frame={{
-                    maxWidth: Infinity,
-                    minHeight: 44,
-                    idealHeight: 44,
-                    alignment: "center"
-                  }}
-                  background={!isRunning && !actionLoading ? "rgba(52, 199, 89, 0.12)" : "systemGray6"}
-                  border={
-                    !isRunning && !actionLoading
-                      ? { style: "rgba(52, 199, 89, 0.28)", width: 0.75 }
-                      : { style: "systemGray4", width: 0.75 }
-                  }
-                  clipShape={{ type: "capsule" }}
-                  shadow={
-                    !isRunning && !actionLoading
-                      ? { color: "rgba(52, 199, 89, 0.16)", radius: 6, x: 0, y: 2 }
-                      : undefined
-                  }
-                  {...(!isRunning && !actionLoading ? liquidGlass(true) : {})}
-                >
-                  <Image
-                    systemName="play"
-                    font={13}
-                    fontWeight="bold"
-                    foregroundStyle={!isRunning && !actionLoading ? "systemGreen" : "secondaryLabel"}
-                  />
-                  <Text
-                    font={13}
-                    bold={!isRunning && !actionLoading}
-                    foregroundStyle={!isRunning && !actionLoading ? "systemGreen" : "secondaryLabel"}
-                    lineLimit={1}
-                  >
-                    启动
-                  </Text>
-                </HStack>
-              </Button>
-            </HStack>
           </VStack>
           <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-            为防误触，停止与重启实例均需通过二次确认弹窗执行。
+            ECS 状态来自阿里云只读查询；开关机与熔断由 VPS 脚本独立负责。
           </Text>
 
           {/* Section 2: 账户资产与实时费用 (Apple Wallet HIG Card) */}
-          {data?.financialBalance && (
+          {data && (
             <>
               <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
                 <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
@@ -2058,6 +1855,7 @@ function ConsoleView() {
               >
                 <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center">
                   {/* 可用现金余额 */}
+                  {data.financialBalance && (
                   <VStack alignment="leading" spacing={4} frame={{ maxWidth: Infinity }}>
                     <Text font={12} foregroundStyle="secondaryLabel">
                       账户现金余额
@@ -2099,33 +1897,43 @@ function ConsoleView() {
                       </Text>
                     </HStack>
                   </VStack>
+                  )}
+                  {data.financialBalance && <Divider frame={{ height: 44 }} />}
 
-                  <Divider frame={{ height: 44 }} />
-
-                  {/* 当月实际扣费支出 */}
-                  <VStack alignment="leading" spacing={4} padding={{ leading: 16 }} frame={{ maxWidth: Infinity }}>
+                  {/* 当月账单查询结果 */}
+                  <VStack alignment="leading" spacing={4} padding={{ leading: data.financialBalance ? 16 : 0 }} frame={{ maxWidth: Infinity }}>
                     <Text font={12} foregroundStyle="secondaryLabel">
-                      本月消费金额
+                      本月账单查询金额
                     </Text>
                     <HStack alignment="lastTextBaseline" spacing={3}>
-                      <Text font={14} bold foregroundStyle="label">
-                        {data.financialBill?.currency === "USD" ? "$" : "¥"}
-                      </Text>
+                      {data.financialBillStatus === "available" && (
+                        <Text font={14} bold foregroundStyle="label">
+                          {data.financialBill?.currency === "USD" ? "$" : "¥"}
+                        </Text>
+                      )}
                       <Text font={22} bold foregroundStyle="label">
-                        {isPrivacy ? "****" : (data.financialBill ? data.financialBill.paymentAmount : "0.00")}
+                        {data.financialBillStatus === "unavailable"
+                          ? "不可用"
+                          : isPrivacy
+                            ? "****"
+                            : data.financialBill?.paymentAmount || "0.00"}
                       </Text>
                     </HStack>
                     <Text
                       font={11}
                       foregroundStyle={
-                        data.financialBill && parseFloat(data.financialBill.paymentAmount) > 0
+                        data.financialBillStatus === "unavailable"
                           ? "systemOrange"
-                          : "systemGreen"
+                          : data.financialBill && parseFloat(data.financialBill.paymentAmount) > 0
+                            ? "systemOrange"
+                            : "systemGreen"
                       }
                     >
-                      {data.financialBill && parseFloat(data.financialBill.paymentAmount) > 0
-                        ? "官方实时账单"
-                        : "免计费额度内"}
+                      {data.financialBillStatus === "unavailable"
+                        ? "账单查询不可用"
+                        : data.financialBill && parseFloat(data.financialBill.paymentAmount) > 0
+                        ? "当前账单查询结果（可能延迟）"
+                        : "当前查询未返回费用"}
                     </Text>
                   </VStack>
                 </HStack>
@@ -2159,7 +1967,7 @@ function ConsoleView() {
                           <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
                         </HStack>
                         <Text font={14} bold foregroundStyle="label">
-                          {isPrivacy ? "****" : `¥${data?.financialBill?.ecsAmount || "0.00"}`}
+                          {data.financialBillStatus === "unavailable" ? "—" : isPrivacy ? "****" : `¥${data?.financialBill?.ecsAmount || "0.00"}`}
                         </Text>
                       </VStack>
                     </HStack>
@@ -2190,7 +1998,7 @@ function ConsoleView() {
                           <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
                         </HStack>
                         <Text font={14} bold foregroundStyle="label">
-                          {isPrivacy ? "****" : `¥${data?.financialBill?.eipAmount || "0.00"}`}
+                          {data.financialBillStatus === "unavailable" ? "—" : isPrivacy ? "****" : `¥${data?.financialBill?.eipAmount || "0.00"}`}
                         </Text>
                       </VStack>
                     </HStack>
@@ -2212,11 +2020,19 @@ function ConsoleView() {
             {data && (
               <HStack
                 padding={{ horizontal: 8, vertical: 3 }}
-                background={data.percentage >= 90 ? "rgba(255, 59, 48, 0.10)" : "rgba(52, 199, 89, 0.10)"}
+                background={data.totalGB >= cutoffReferenceGB
+                  ? "rgba(255, 59, 48, 0.10)"
+                  : data.totalGB >= cutoffReferenceGB - 15
+                    ? "rgba(255, 149, 0, 0.10)"
+                    : "rgba(52, 199, 89, 0.10)"}
                 clipShape={{ type: "capsule" }}
               >
-                <Text font={12} bold foregroundStyle={data.percentage >= 90 ? "systemRed" : "systemGreen"}>
-                  已用 {data.percentage}%
+                <Text font={12} bold foregroundStyle={data.totalGB >= cutoffReferenceGB
+                  ? "systemRed"
+                  : data.totalGB >= cutoffReferenceGB - 15
+                    ? "systemOrange"
+                    : "systemGreen"}>
+                  参考值进度 {data.percentage}%
                 </Text>
               </HStack>
             )}
@@ -2241,10 +2057,10 @@ function ConsoleView() {
               </ZStack>
               <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
                 <Text font="subheadline" bold foregroundStyle="label">
-                  出网用量 / 阈值
+                  出网用量 / 本地参考值
                 </Text>
                 <Text font="caption2" foregroundStyle="secondaryLabel">
-                  当月警戒阈值: {config.trafficThresholdGB} GB
+                  本地月用量参考值: {config.trafficThresholdGB} GB
                 </Text>
               </VStack>
               {data && (
@@ -2291,7 +2107,7 @@ function ConsoleView() {
                   foregroundStyle={healthMeta.color}
                 />
                 <Text font={11} foregroundStyle={healthMeta.color} lineLimit={1}>
-                  本月时间已过 {monthTimeProgress.toFixed(0)}% · 流量消耗 {data.percentage.toFixed(1)}%（{healthMeta.label}）
+                  本月时间已过 {monthTimeProgress.toFixed(0)}% · 已用 {data.totalGB.toFixed(1)} GB · VPS {cutoffReferenceGB} GB 参考线余 {cutoffRemainingGB.toFixed(1)} GB（{healthMeta.label}）
                 </Text>
               </HStack>
             )}
@@ -2301,16 +2117,30 @@ function ConsoleView() {
             {/* 三列指标卡片 (通透布局，去灰底，数值加粗大字号，内边距 16px) */}
             {data ? (
               <HStack padding={{ horizontal: 16, vertical: 16 }} alignment="center">
-                {/* 剩余可用 */}
+                {/* 本地月用量参考值余量或超出量 */}
                 <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
                   <Text font={12} foregroundStyle="secondaryLabel">
-                    剩余可用
+                    {data.totalGB > data.thresholdGB
+                      ? "超出参考值"
+                      : data.totalGB === data.thresholdGB
+                        ? "已达到参考值"
+                        : "参考值余量"}
                   </Text>
                   <HStack alignment="lastTextBaseline" spacing={2}>
-                    <Text font={20} bold foregroundStyle="systemBlue">
-                      {data.remainingGB.toFixed(1)}
+                    <Text
+                      font={20}
+                      bold
+                      foregroundStyle={data.totalGB > data.thresholdGB ? "systemRed" : "systemBlue"}
+                    >
+                      {data.totalGB > data.thresholdGB
+                        ? `+${(data.totalGB - data.thresholdGB).toFixed(1)}`
+                        : data.remainingGB.toFixed(1)}
                     </Text>
-                    <Text font={12} bold foregroundStyle="systemBlue">
+                    <Text
+                      font={12}
+                      bold
+                      foregroundStyle={data.totalGB > data.thresholdGB ? "systemRed" : "systemBlue"}
+                    >
                       GB
                     </Text>
                   </HStack>
@@ -2335,10 +2165,10 @@ function ConsoleView() {
 
                 <Divider frame={{ height: 28 }} />
 
-                {/* 建议日均 */}
+                {/* 日均参考 */}
                 <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
                   <Text font={12} foregroundStyle="secondaryLabel">
-                    建议日均
+                    日均参考
                   </Text>
                   <HStack alignment="lastTextBaseline" spacing={2}>
                     <Text font={20} bold foregroundStyle={data.color}>
@@ -2366,7 +2196,7 @@ function ConsoleView() {
               lineLimit={3}
               frame={{ maxWidth: Infinity, alignment: "leading" }}
             >
-              VPS 托管纯统计模式：实例由远端 VPS 自动保活与夜间节省停机，手机端仅展示实时 CDT 流量与官方折后账单。
+              VPS 独立负责实例保活与熔断，手机只读展示。流量余量和进度按本地月用量参考值计算，不代表阿里云账号维度的完整免费额度余额。
             </Text>
           </HStack>
 
