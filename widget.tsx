@@ -36,6 +36,8 @@ interface AppConfig {
 
 const STORAGE_KEY = "aliyun_cdt_monitor_config"
 const TRAFFIC_HISTORY_KEY = "aliyun_cdt_daily_history_v1"
+const DASHBOARD_SNAPSHOT_STORAGE_KEY = "aliyun_cdt_dashboard_cache"
+const WIDGET_REFRESH_AFTER_MS = 15 * 60 * 1000
 
 const DEFAULT_CONFIG: AppConfig = {
   accessKeyId: "",
@@ -400,6 +402,107 @@ interface WidgetData {
   color: string
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value)
+}
+
+function parseCachedDate(value: unknown): Date | null {
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value : null
+  }
+  if (typeof value !== "string" && typeof value !== "number") return null
+  const date = new Date(value)
+  return Number.isFinite(date.getTime()) ? date : null
+}
+
+function normalizeEcsStatus(value: unknown): WidgetData["ecsStatus"] {
+  switch (value) {
+    case "Running":
+    case "Stopped":
+    case "Starting":
+    case "Stopping":
+      return value
+    default:
+      return "Unknown"
+  }
+}
+
+function buildUnavailableDailyUsage(now: Date): DailyUsagePoint[] {
+  const weekdayLabels = ["日", "一", "二", "三", "四", "五", "六"]
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = offsetDate(now, index - 6)
+    return {
+      date: localDateKey(date),
+      label: index === 6 ? "今" : weekdayLabels[date.getDay()],
+      valueGB: null,
+      isToday: index === 6
+    }
+  })
+}
+
+/**
+ * The app dashboard stores ConsoleData, which intentionally has no local
+ * sampling series. Validate its stable source fields before adapting it for a
+ * widget fallback; never pass an untyped Storage value into a widget view.
+ */
+function adaptDashboardSnapshotForWidget(raw: unknown): WidgetData | null {
+  if (!isRecord(raw)) return null
+
+  const totalGB = raw.totalGB
+  const thresholdGB = raw.thresholdGB
+  const vpsCutoffReferenceGB = raw.vpsCutoffReferenceGB
+  const updatedAt = parseCachedDate(raw.updatedAt)
+
+  if (
+    !isFiniteNumber(totalGB) || totalGB < 0 ||
+    !isFiniteNumber(thresholdGB) || thresholdGB <= 0 ||
+    !isFiniteNumber(vpsCutoffReferenceGB) || vpsCutoffReferenceGB <= 0 ||
+    !updatedAt
+  ) {
+    return null
+  }
+
+  const cachedDaysRemaining = raw.daysRemaining
+  const daysRemaining = isFiniteNumber(cachedDaysRemaining) && cachedDaysRemaining >= 1
+    ? Math.max(1, Math.round(cachedDaysRemaining))
+    : Math.max(1, new Date(updatedAt.getFullYear(), updatedAt.getMonth() + 1, 0).getDate() - updatedAt.getDate() + 1)
+  const cutoffRemainingGB = Math.max(0, Number((vpsCutoffReferenceGB - totalGB).toFixed(2)))
+  const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
+  const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
+  const color = totalGB >= vpsCutoffReferenceGB
+    ? "systemRed"
+    : totalGB >= vpsCutoffReferenceGB - 15
+      ? "systemOrange"
+      : "systemGreen"
+  const publicIp = typeof raw.publicIp === "string" && raw.publicIp.trim()
+    ? raw.publicIp.trim()
+    : undefined
+
+  return {
+    totalGB,
+    thresholdGB,
+    vpsCutoffReferenceGB,
+    cutoffRemainingGB,
+    remainingGB,
+    percentage,
+    daysRemaining,
+    dailyBudgetGB: (remainingGB / daysRemaining).toFixed(2),
+    // The dashboard does not save local daily samples, so these remain unknown.
+    dailyUsage: buildUnavailableDailyUsage(updatedAt),
+    sevenDayTotalGB: null,
+    todayEstimatedGB: null,
+    updatedAt,
+    ecsStatus: normalizeEcsStatus(raw.ecsStatus),
+    publicIp,
+    color
+  }
+}
+
 async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
   // 1. 查询 CDT 流量
   const cdtData = await aliyunRequest<{
@@ -415,19 +518,23 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
   const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
   const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
 
-  // 2. 查询 ECS 状态
-  const ecsData = await aliyunRequest<{
-    Instances?: {
-      Instance?: ECSInstanceRecord[]
-    }
-  }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
-    InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
-    RegionId: config.regionId.trim()
-  })
+  // 2. 查询 ECS 状态；失败时仍保留已成功获取的 CDT 用量。
+  let ecsStatus: WidgetData["ecsStatus"] = "Unknown"
+  let publicIp: string | undefined
+  try {
+    const ecsData = await aliyunRequest<{
+      Instances?: {
+        Instance?: ECSInstanceRecord[]
+      }
+    }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
+      InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
+      RegionId: config.regionId.trim()
+    })
 
-  const instance = ecsData.Instances?.Instance?.[0]
-  let ecsStatus = (instance?.Status as any) || "Unknown"
-  const publicIp = getInstancePublicIp(instance)
+    const instance = ecsData.Instances?.Instance?.[0]
+    ecsStatus = (instance?.Status as WidgetData["ecsStatus"]) || "Unknown"
+    publicIp = getInstancePublicIp(instance)
+  } catch {}
 
   // 3. 纯统计模式：小组件不执行任何关机请求，仅只读监控流量与状态
 
@@ -940,6 +1047,27 @@ function LargeWidgetView({ data }: { data: WidgetData }) {
   )
 }
 
+/** 锁屏圆形小组件 (accessoryCircular) */
+function AccessoryCircularView({ data }: { data: WidgetData }) {
+  return (
+    <ZStack
+      alignment="center"
+      widgetBackground="clear"
+      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
+    >
+      <TrafficRing
+        data={data}
+        size={52}
+        lineWidth={5}
+        value={`${data.percentage.toFixed(0)}%`}
+        caption="CDT"
+        valueFont={12}
+        captionFont={7}
+      />
+    </ZStack>
+  )
+}
+
 /** 锁屏矩形小组件 (accessoryRectangular) */
 function AccessoryRectangularView({ data }: { data: WidgetData }) {
   const status = getECSStatusMeta(data.ecsStatus)
@@ -990,6 +1118,32 @@ function AccessoryInlineView({ data }: { data: WidgetData }) {
   )
 }
 
+function presentWidget(view: any): void {
+  // `policy: "after"` is an earliest requested refresh time; iOS may defer it.
+  Widget.present(view, {
+    policy: "after",
+    date: new Date(Date.now() + WIDGET_REFRESH_AFTER_MS)
+  })
+}
+
+function presentDataWidget(data: WidgetData): void {
+  const family = Widget.family
+
+  if (family === "accessoryInline") {
+    presentWidget(<AccessoryInlineView data={data} />)
+  } else if (family === "accessoryCircular") {
+    presentWidget(<AccessoryCircularView data={data} />)
+  } else if (family === "accessoryRectangular") {
+    presentWidget(<AccessoryRectangularView data={data} />)
+  } else if (family === "systemLarge") {
+    presentWidget(<LargeWidgetView data={data} />)
+  } else if (family === "systemMedium") {
+    presentWidget(<MediumWidgetView data={data} />)
+  } else {
+    presentWidget(<SmallWidgetView data={data} />)
+  }
+}
+
 // ==================== 5. 主执行入口 ====================
 
 async function main() {
@@ -998,50 +1152,29 @@ async function main() {
 
     // 若未配置，渲染引导提示
     if (!isConfigReady(config)) {
-      Widget.present(<NotConfiguredWidgetView />)
+      presentWidget(<NotConfiguredWidgetView />)
       return
     }
 
     const data = await fetchWidgetData(config)
-    const family = Widget.family
-
-    if (family === "accessoryInline") {
-      Widget.present(<AccessoryInlineView data={data} />)
-    } else if (family === "accessoryRectangular") {
-      Widget.present(<AccessoryRectangularView data={data} />)
-    } else if (family === "systemLarge") {
-      Widget.present(<LargeWidgetView data={data} />)
-    } else if (family === "systemMedium") {
-      Widget.present(<MediumWidgetView data={data} />)
-    } else {
-      Widget.present(<SmallWidgetView data={data} />)
-    }
+    presentDataWidget(data)
   } catch (err: any) {
     console.error("小组件加载失败:", err)
-    // 弱网容灾：尝试降级渲染本地持久化快照，避免组件变红
+    // 弱网容灾：控制台快照缺少日采样字段，必须校验并适配后才能渲染。
     try {
       if (typeof Storage !== "undefined" && Storage?.get) {
-        const raw = Storage.get("aliyun_cdt_dashboard_cache")
+        const raw = Storage.get(DASHBOARD_SNAPSHOT_STORAGE_KEY)
         if (raw) {
-          const cached = typeof raw === "string" ? JSON.parse(raw) : raw
-          const family = Widget.family
-          if (family === "accessoryInline") {
-            Widget.present(<AccessoryInlineView data={cached} />)
-          } else if (family === "accessoryRectangular") {
-            Widget.present(<AccessoryRectangularView data={cached} />)
-          } else if (family === "systemLarge") {
-            Widget.present(<LargeWidgetView data={cached} />)
-          } else if (family === "systemMedium") {
-            Widget.present(<MediumWidgetView data={cached} />)
-          } else {
-            Widget.present(<SmallWidgetView data={cached} />)
-          }
+          const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
+          const cached = adaptDashboardSnapshotForWidget(parsed)
+          if (!cached) throw new Error("本地快照数据不完整")
+          presentDataWidget(cached)
           return
         }
       }
     } catch {}
 
-    Widget.present(
+    presentWidget(
       <VStack
         alignment="leading"
         spacing={6}

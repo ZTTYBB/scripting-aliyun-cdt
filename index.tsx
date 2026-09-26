@@ -35,7 +35,7 @@ import {
 
 // ==================== 1. 本地存储配置管理 ====================
 
-const APP_VERSION = "1.6.0"
+const APP_VERSION = "1.6.1"
 
 interface AppConfig {
   accessKeyId: string
@@ -274,6 +274,8 @@ export interface DailyExpenseItem {
 export interface MonthlyBillInfo {
   billingCycle: string
   paymentAmount: string
+  // Optional so snapshots saved before this metadata was introduced still render safely.
+  paymentScope?: "monitoredProducts" | "allProducts"
   outstandingAmount: string
   currency: string
   ecsAmount: string
@@ -281,6 +283,27 @@ export interface MonthlyBillInfo {
   cdtAmount: string
   ecsDailyList: DailyExpenseItem[]
   eipDailyList: DailyExpenseItem[]
+}
+
+function getMonthlyBillPresentation(bill?: MonthlyBillInfo | null): { label: string; detail: string } {
+  if (bill?.paymentScope === "allProducts") {
+    return {
+      label: "本月全部产品费用",
+      detail: "当前全部产品账单查询结果（可能延迟）"
+    }
+  }
+
+  if (bill?.paymentScope === "monitoredProducts") {
+    return {
+      label: "本月监控产品费用",
+      detail: "仅含已识别的监控产品，不含其他阿里云产品（可能延迟）"
+    }
+  }
+
+  return {
+    label: "本月监控产品费用",
+    detail: "费用范围未标记，按监控产品费用显示；可能不含其他阿里云产品（请刷新确认）"
+  }
 }
 
 function isBillQueryAvailable(response: any): boolean {
@@ -359,19 +382,23 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
   const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
 
-  // 2. 查询 ECS 状态
-  const ecsData = await aliyunRequest<{
-    Instances?: {
-      Instance?: ECSInstanceRecord[]
-    }
-  }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
-    InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
-    RegionId: config.regionId.trim()
-  })
+  // 2. 查询 ECS 状态；失败时仍保留已成功获取的 CDT 用量。
+  let ecsStatus: ConsoleData["ecsStatus"] = "Unknown"
+  let publicIp: string | undefined
+  try {
+    const ecsData = await aliyunRequest<{
+      Instances?: {
+        Instance?: ECSInstanceRecord[]
+      }
+    }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
+      InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
+      RegionId: config.regionId.trim()
+    })
 
-  const instance = ecsData.Instances?.Instance?.[0]
-  let ecsStatus = (instance?.Status as any) || "Unknown"
-  const publicIp = getInstancePublicIp(instance)
+    const instance = ecsData.Instances?.Instance?.[0]
+    ecsStatus = (instance?.Status as ConsoleData["ecsStatus"]) || "Unknown"
+    publicIp = getInstancePublicIp(instance)
+  } catch {}
 
   // 3. 纯统计模式：控制台仅只读拉取用量与账单，关机熔断由 VPS 独立守护
 
@@ -399,9 +426,10 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
     }>("business.aliyuncs.com", "QueryAccountBalance", "2017-12-14", config).catch(() => null)
 
     if (balRes?.Data) {
+      const availableAmount = parseFloat(balRes.Data.AvailableAmount || "0")
       const cash = parseFloat(balRes.Data.AvailableCashAmount || "0")
       let status: "sufficient" | "low" | "arrears" = "sufficient"
-      if (cash <= 0) {
+      if (availableAmount < 0) {
         status = "arrears"
       } else if (cash < 10) {
         status = "low"
@@ -453,6 +481,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
         }
       }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
         BillingCycle: cycle,
+        PageSize: 300,
         IsGroupByProduct: true
       }).catch(() => null)
 
@@ -507,6 +536,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
       const finalPayment = hasInfrastructureItems
         ? infrastructureTotal
         : allProductsEffective
+      const canQueryDailyBill = financialBillStatus === "available"
 
       const formatDaily = (amt: number): string => {
         if (amt <= 0) return "0.00"
@@ -514,7 +544,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
         return amt.toFixed(2)
       }
 
-      // 查询最近日期的每日账单明细；月内数据可能延迟。
+      // 仅在账单总览或回退接口已确认可用后，才查询每日产品账单分类。
       const ecsDailyList: DailyExpenseItem[] = []
       const eipDailyList: DailyExpenseItem[] = []
       const daysCount = Math.min(7, currentDay)
@@ -534,7 +564,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
 
       try {
         const dailyResults = await Promise.all(
-          dateQueries.map(async q => {
+          (canQueryDailyBill ? dateQueries : []).map(async q => {
             try {
               const dayRes = await aliyunRequest<{
                 Data?: {
@@ -546,6 +576,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
                 BillingCycle: cycle,
                 Granularity: "DAILY",
                 BillingDate: q.dateStr,
+                PageSize: 300,
                 IsGroupByProduct: true
               }).catch(() => null)
 
@@ -614,16 +645,19 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
         }
       }
 
-    financialBill = {
-      billingCycle: cycle,
-      paymentAmount: finalPayment.toFixed(2),
-      outstandingAmount: outstanding.toFixed(2),
-      currency,
-      ecsAmount: ecsTotal.toFixed(2),
-      eipAmount: eipTotal.toFixed(2),
-      cdtAmount: cdtTotal.toFixed(2),
-      ecsDailyList,
-      eipDailyList
+    if (canQueryDailyBill) {
+      financialBill = {
+        billingCycle: cycle,
+        paymentAmount: finalPayment.toFixed(2),
+        paymentScope: hasInfrastructureItems ? "monitoredProducts" : "allProducts",
+        outstandingAmount: outstanding.toFixed(2),
+        currency,
+        ecsAmount: ecsTotal.toFixed(2),
+        eipAmount: eipTotal.toFixed(2),
+        cdtAmount: cdtTotal.toFixed(2),
+        ecsDailyList,
+        eipDailyList
+      }
     }
   } catch {}
 
@@ -670,6 +704,21 @@ function getTrafficHealthMeta(totalGB: number, cutoffReferenceGB: number, percen
   return { label: "月用量处于本地参考进度内", color: "systemGreen", icon: "checkmark.circle.fill" }
 }
 
+function formatCompactUsage(value: number): string {
+  if (!Number.isFinite(value)) return "—"
+  const absoluteValue = Math.abs(value)
+  if (absoluteValue >= 100000000) {
+    return `${(value / 100000000).toFixed(1)}亿`
+  }
+  if (absoluteValue >= 10000) {
+    return `${(value / 10000).toFixed(1)}万`
+  }
+  if (absoluteValue >= 1000) {
+    return value.toFixed(0)
+  }
+  return value.toFixed(1)
+}
+
 function humanizeAliyunError(rawMessage: string): string {
   if (!rawMessage) return "未知错误"
   if (rawMessage.includes("InvalidAccessKeyId.NotFound")) {
@@ -682,7 +731,7 @@ function humanizeAliyunError(rawMessage: string): string {
     return "找不到指定的 ECS 实例，请核对实例 ID 与所在地域 (Region)。"
   }
   if (rawMessage.includes("Forbidden.RAM") || rawMessage.includes("NoPermission") || rawMessage.includes("Unauthorized")) {
-    return "RAM 权限不足：请在阿里云访问控制为该 Key 授予 AliyunECSFullAccess 和 CDT 读权限。"
+    return "RAM 权限不足：请授予所需只读权限 ecs:DescribeInstances、cdt:ListCdtInternetTraffic；账单功能另需对应 BSS 查询权限。"
   }
   if (rawMessage.includes("IncorrectInstanceStatus")) {
     return "实例当前状态无法执行此操作，请稍候重试。"
@@ -734,6 +783,15 @@ function liquidGlass(interactive: boolean = true) {
 }
 
 // ==================== 5. 设置配置面板视图 (Apple Liquid Glass Controls) ====================
+
+function maskAccessKeyId(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ""
+
+  const suffixLength = Math.min(4, Math.max(0, trimmed.length - 1))
+  const suffix = suffixLength > 0 ? trimmed.slice(-suffixLength) : ""
+  return `••••${suffix}`
+}
 
 function SettingsActionButton({
   label,
@@ -1088,7 +1146,7 @@ function SettingsView({
                 AccessKey ID
               </Text>
               <Text font="caption2" foregroundStyle={ak ? "secondaryLabel" : "systemBlue"} lineLimit={1}>
-                {ak ? ak : "轻点右侧设置 >"}
+                {ak ? maskAccessKeyId(ak) : "轻点右侧设置 >"}
               </Text>
             </VStack>
             <SettingsActionButton
@@ -1165,7 +1223,7 @@ function SettingsView({
               label={ecsId ? "修改" : "设置"}
               accessibilityLabel="设置 ECS 实例 ID"
               action={() =>
-                promptField("设置 ECS 实例 ID", "请输入您要控制的 ECS 实例 ID", ecsId, "i-xxxxxxxxxxxx", setEcsId)
+                promptField("设置 ECS 实例 ID", "请输入要监控状态的 ECS 实例 ID", ecsId, "i-xxxxxxxxxxxx", setEcsId)
               }
             />
           </HStack>
@@ -1344,6 +1402,7 @@ function ConsoleView() {
   const [loading, setLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [logs, setLogs] = useState<string[]>([])
+  const financialBillPresentation = getMonthlyBillPresentation(data?.financialBill)
   const [isPrivacy, setIsPrivacy] = useState<boolean>(() => {
     try {
       return typeof Storage !== "undefined" && Storage.get(PRIVACY_STORAGE_KEY) === "true"
@@ -1413,20 +1472,20 @@ function ConsoleView() {
     })
 
     const msg = [
-      `ECS 实例 ID: ${config.ecsInstanceId}`,
-      `本月账单查询结果: ${total}`,
+      `本月 ECS 产品账单查询结果: ${total}`,
+      "说明：按账号维度汇总 ECS 产品费用，非当前配置的单台实例费用。",
       "",
-      "【每日账单查询结果（可能延迟）】",
-      lines.length > 0 ? lines.join("\n") : "暂无每日明细数据",
+      "【最近每日产品账单查询结果（可能延迟）】",
+      lines.length > 0 ? lines.join("\n") : "暂无每日产品账单数据",
       "",
       data?.financialBillStatus === "unavailable"
         ? "账单接口暂不可用，请检查 BSS 权限或稍后刷新。"
-        : "月内账单数据有延迟且仅供参考，最终金额以阿里云账单中心出账结果为准。"
+        : "账单按产品分类汇总，不能归因到当前 ECS 实例；月内数据有延迟且仅供参考，最终金额以阿里云账单中心出账结果为准。"
     ].join("\n")
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
       await Dialog.alert({
-        title: "🖥️ ECS 实例每日费用明细",
+        title: "🖥️ ECS 产品费用明细",
         message: msg
       })
     }
@@ -1459,20 +1518,20 @@ function ConsoleView() {
     })
 
     const msg = [
-      `公网 IP: ${data?.publicIp || "弹性公网 IP"}`,
-      `本月账单查询结果: ${total}`,
+      `本月公网网络产品账单查询结果: ${total}`,
+      "说明：按账号维度汇总公网网络产品费用，非当前配置公网 IP 的单独费用。",
       "",
-      "【每日账单查询结果（可能延迟）】",
-      lines.length > 0 ? lines.join("\n") : "暂无每日明细数据",
+      "【最近每日产品账单查询结果（可能延迟）】",
+      lines.length > 0 ? lines.join("\n") : "暂无每日产品账单数据",
       "",
       data?.financialBillStatus === "unavailable"
         ? "账单接口暂不可用，请检查 BSS 权限或稍后刷新。"
-        : "月内账单数据有延迟且仅供参考，最终金额以阿里云账单中心出账结果为准。"
+        : "账单按产品分类汇总，不能归因到当前公网 IP；月内数据有延迟且仅供参考，最终金额以阿里云账单中心出账结果为准。"
     ].join("\n")
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
       await Dialog.alert({
-        title: "🌐 弹性 IP 每日费用明细",
+        title: "🌐 公网网络产品费用明细",
         message: msg
       })
     }
@@ -1649,20 +1708,15 @@ function ConsoleView() {
                 buttonStyle="plain"
                 accessibilityLabel="刷新数据"
               >
-                <HStack
-                  spacing={4}
-                  padding={{ horizontal: 10, vertical: 6 }}
+                <ZStack
+                  frame={{ width: 44, height: 44 }}
                   background="rgba(0, 122, 255, 0.10)"
                   border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
                   clipShape={{ type: "capsule" }}
-                  alignment="center"
                   {...liquidGlass(true)}
                 >
-                  <Image systemName="arrow.clockwise" font={12} foregroundStyle="systemBlue" />
-                  <Text font="caption1" bold foregroundStyle="systemBlue">
-                    {loading ? "同步中" : "刷新"}
-                  </Text>
-                </HStack>
+                  <Image systemName="arrow.clockwise" font={16} foregroundStyle="systemBlue" />
+                </ZStack>
               </Button>
               {/* 设置入口 */}
               <Button
@@ -1670,18 +1724,15 @@ function ConsoleView() {
                 buttonStyle="plain"
                 accessibilityLabel="设置"
               >
-                <HStack
-                  spacing={4}
-                  padding={{ horizontal: 10, vertical: 6 }}
+                <ZStack
+                  frame={{ width: 44, height: 44 }}
                   background="rgba(0, 122, 255, 0.10)"
                   border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
                   clipShape={{ type: "capsule" }}
-                  alignment="center"
                   {...liquidGlass(true)}
                 >
-                  <Image systemName="gearshape.fill" font={12} foregroundStyle="systemBlue" />
-                  <Text font="caption1" bold foregroundStyle="systemBlue">设置</Text>
-                </HStack>
+                  <Image systemName="gearshape.fill" font={16} foregroundStyle="systemBlue" />
+                </ZStack>
               </Button>
             </HStack>
           </HStack>
@@ -1903,7 +1954,7 @@ function ConsoleView() {
                   {/* 当月账单查询结果 */}
                   <VStack alignment="leading" spacing={4} padding={{ leading: data.financialBalance ? 16 : 0 }} frame={{ maxWidth: Infinity }}>
                     <Text font={12} foregroundStyle="secondaryLabel">
-                      本月账单查询金额
+                      {financialBillPresentation.label}
                     </Text>
                     <HStack alignment="lastTextBaseline" spacing={3}>
                       {data.financialBillStatus === "available" && (
@@ -1931,22 +1982,20 @@ function ConsoleView() {
                     >
                       {data.financialBillStatus === "unavailable"
                         ? "账单查询不可用"
-                        : data.financialBill && parseFloat(data.financialBill.paymentAmount) > 0
-                        ? "当前账单查询结果（可能延迟）"
-                        : "当前查询未返回费用"}
+                        : financialBillPresentation.detail}
                     </Text>
                   </VStack>
                 </HStack>
 
                 <Divider padding={{ horizontal: 16 }} />
 
-                {/* ECS 实例与弹性 IP 分拆费用微晶卡片 (支持轻触弹窗查看每日明细) */}
+                {/* ECS 与公网网络产品费用卡片（支持轻触查看每日产品账单分类） */}
                 <HStack padding={{ horizontal: 14, vertical: 10 }} spacing={10}>
-                  {/* ECS 实例费用微晶卡片 */}
+                  {/* ECS 产品费用微晶卡片 */}
                   <Button
                     action={handleShowEcsDaily}
                     buttonStyle="plain"
-                    accessibilityLabel="查看 ECS 实例每日费用明细"
+                    accessibilityLabel="查看 ECS 产品每日费用明细"
                     frame={{ maxWidth: Infinity }}
                   >
                     <HStack
@@ -1963,7 +2012,7 @@ function ConsoleView() {
                       </ZStack>
                       <VStack alignment="leading" spacing={1} frame={{ maxWidth: Infinity }}>
                         <HStack alignment="center" spacing={3}>
-                          <Text font={11} foregroundStyle="secondaryLabel">实例费用</Text>
+                          <Text font={11} foregroundStyle="secondaryLabel">ECS 产品</Text>
                           <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
                         </HStack>
                         <Text font={14} bold foregroundStyle="label">
@@ -1973,11 +2022,11 @@ function ConsoleView() {
                     </HStack>
                   </Button>
 
-                  {/* 弹性 IP 费用微晶卡片 */}
+                  {/* 公网网络产品费用微晶卡片 */}
                   <Button
                     action={handleShowEipDaily}
                     buttonStyle="plain"
-                    accessibilityLabel="查看弹性 IP 每日费用明细"
+                    accessibilityLabel="查看公网网络产品每日费用明细"
                     frame={{ maxWidth: Infinity }}
                   >
                     <HStack
@@ -1994,7 +2043,7 @@ function ConsoleView() {
                       </ZStack>
                       <VStack alignment="leading" spacing={1} frame={{ maxWidth: Infinity }}>
                         <HStack alignment="center" spacing={3}>
-                          <Text font={11} foregroundStyle="secondaryLabel">弹性 IP</Text>
+                          <Text font={11} foregroundStyle="secondaryLabel">公网网络</Text>
                           <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
                         </HStack>
                         <Text font={14} bold foregroundStyle="label">
@@ -2006,7 +2055,7 @@ function ConsoleView() {
                 </HStack>
               </VStack>
               <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-                轻触实例费用或弹性 IP 卡片可查看最近每日消费明细与日均推算。
+                轻触 ECS 产品或公网网络卡片可查看最近每日账单分类；结果按账号汇总，非单实例或单 IP 费用。
               </Text>
             </>
           )}
@@ -2097,8 +2146,8 @@ function ConsoleView() {
             {/* 时间进度 vs 流量进度健康度提示 */}
             {data && healthMeta && (
               <HStack
-                spacing={6}
-                alignment="center"
+                spacing={8}
+                alignment="top"
                 padding={{ horizontal: 16, top: 0, bottom: 14 }}
               >
                 <Image
@@ -2106,9 +2155,14 @@ function ConsoleView() {
                   font={12}
                   foregroundStyle={healthMeta.color}
                 />
-                <Text font={11} foregroundStyle={healthMeta.color} lineLimit={1}>
-                  本月时间已过 {monthTimeProgress.toFixed(0)}% · 已用 {data.totalGB.toFixed(1)} GB · VPS {cutoffReferenceGB} GB 参考线余 {cutoffRemainingGB.toFixed(1)} GB（{healthMeta.label}）
-                </Text>
+                <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                  <Text font={12} bold foregroundStyle={healthMeta.color} lineLimit={2}>
+                    {healthMeta.label}
+                  </Text>
+                  <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>
+                    已用 {formatCompactUsage(data.totalGB)} GB · VPS 参考线余 {formatCompactUsage(cutoffRemainingGB)} GB
+                  </Text>
+                </VStack>
               </HStack>
             )}
 
@@ -2116,68 +2170,70 @@ function ConsoleView() {
 
             {/* 三列指标卡片 (通透布局，去灰底，数值加粗大字号，内边距 16px) */}
             {data ? (
-              <HStack padding={{ horizontal: 16, vertical: 16 }} alignment="center">
+              <HStack padding={{ horizontal: 16, vertical: 16 }} alignment="top" spacing={0}>
                 {/* 本地月用量参考值余量或超出量 */}
                 <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
-                  <Text font={12} foregroundStyle="secondaryLabel">
+                  <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1} frame={{ maxWidth: Infinity, alignment: "center" }}>
                     {data.totalGB > data.thresholdGB
                       ? "超出参考值"
                       : data.totalGB === data.thresholdGB
-                        ? "已达到参考值"
+                        ? "达到参考值"
                         : "参考值余量"}
                   </Text>
-                  <HStack alignment="lastTextBaseline" spacing={2}>
+                  <VStack alignment="center" spacing={0} frame={{ maxWidth: Infinity }}>
                     <Text
-                      font={20}
+                      font={18}
                       bold
                       foregroundStyle={data.totalGB > data.thresholdGB ? "systemRed" : "systemBlue"}
+                      lineLimit={1}
+                      frame={{ maxWidth: Infinity, alignment: "center" }}
                     >
                       {data.totalGB > data.thresholdGB
-                        ? `+${(data.totalGB - data.thresholdGB).toFixed(1)}`
-                        : data.remainingGB.toFixed(1)}
+                        ? `+${formatCompactUsage(data.totalGB - data.thresholdGB)}`
+                        : formatCompactUsage(data.remainingGB)}
                     </Text>
                     <Text
-                      font={12}
+                      font={11}
                       bold
                       foregroundStyle={data.totalGB > data.thresholdGB ? "systemRed" : "systemBlue"}
                     >
                       GB
                     </Text>
-                  </HStack>
+                  </VStack>
                 </VStack>
 
-                <Divider frame={{ height: 28 }} />
+                <Divider frame={{ height: 44 }} />
 
                 {/* 距结算重置 */}
                 <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
-                  <Text font={12} foregroundStyle="secondaryLabel">
+                  <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1} frame={{ maxWidth: Infinity, alignment: "center" }}>
                     距结算重置
                   </Text>
-                  <HStack alignment="lastTextBaseline" spacing={2}>
-                    <Text font={20} bold foregroundStyle="label">
+                  <VStack alignment="center" spacing={0} frame={{ maxWidth: Infinity }}>
+                    <Text font={18} bold foregroundStyle="label" lineLimit={1} frame={{ maxWidth: Infinity, alignment: "center" }}>
                       {data.daysRemaining}
                     </Text>
-                    <Text font={12} bold foregroundStyle="secondaryLabel">
+                    <Text font={11} bold foregroundStyle="secondaryLabel">
                       天
                     </Text>
-                  </HStack>
+                  </VStack>
                 </VStack>
 
-                <Divider frame={{ height: 28 }} />
+                <Divider frame={{ height: 44 }} />
 
                 {/* 日均参考 */}
                 <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
-                  <Text font={12} foregroundStyle="secondaryLabel">
+                  <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1} frame={{ maxWidth: Infinity, alignment: "center" }}>
                     日均参考
                   </Text>
-                  <HStack alignment="lastTextBaseline" spacing={2}>
+                  <VStack alignment="center" spacing={0} frame={{ maxWidth: Infinity }}>
                     <Text font={20} bold foregroundStyle={data.color}>
-                      &lt; {data.dailyBudgetGB}
+                      &lt; {formatCompactUsage(Number(data.dailyBudgetGB))}
                     </Text>
-                    <Text font={12} bold foregroundStyle={data.color}>
+                    <Text font={11} bold foregroundStyle={data.color}>
                       GB
                     </Text>
-                  </HStack>
+                  </VStack>
                 </VStack>
               </HStack>
             ) : (

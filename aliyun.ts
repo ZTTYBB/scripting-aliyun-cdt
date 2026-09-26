@@ -231,6 +231,8 @@ export interface DailyExpenseItem {
 export interface MonthlyBillInfo {
   billingCycle: string
   paymentAmount: string
+  // Optional so snapshots saved before this metadata was introduced still render safely.
+  paymentScope?: "monitoredProducts" | "allProducts"
   outstandingAmount: string
   currency: string
   ecsAmount: string
@@ -385,9 +387,10 @@ export class AliyunService {
         this.config
       )
       if (!data?.Data) return null
+      const availableAmount = parseFloat(data.Data.AvailableAmount || "0")
       const cash = parseFloat(data.Data.AvailableCashAmount || "0")
       let status: "sufficient" | "low" | "arrears" = "sufficient"
-      if (cash <= 0) {
+      if (availableAmount < 0) {
         status = "arrears"
       } else if (cash < 10) {
         status = "low"
@@ -465,6 +468,7 @@ export class AliyunService {
               method: "POST",
               params: {
                 BillingCycle: cycle,
+                PageSize: 300,
                 IsGroupByProduct: true
               }
             },
@@ -572,6 +576,7 @@ export class AliyunService {
                     BillingCycle: cycle,
                     Granularity: "DAILY",
                     BillingDate: q.dateStr,
+                    PageSize: 300,
                     IsGroupByProduct: true
                   }
                 },
@@ -643,6 +648,7 @@ export class AliyunService {
       return {
         billingCycle: cycle,
         paymentAmount: finalPayment.toFixed(2),
+        paymentScope: hasInfrastructureItems ? "monitoredProducts" : "allProducts",
         outstandingAmount: outstanding.toFixed(2),
         currency,
         ecsAmount: ecsTotal.toFixed(2),

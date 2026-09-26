@@ -1,12 +1,12 @@
 # 阿里云 CDT 免费流量监控与 ECS 财务对账看板 (Scripting iOS)
 
-[![Version](https://img.shields.io/badge/version-1.6.0-blue.svg)](https://github.com/ZTTYBB/scripting-aliyun-cdt)
+[![Version](https://img.shields.io/badge/version-1.6.1-blue.svg)](https://github.com/ZTTYBB/scripting-aliyun-cdt)
 [![Platform](https://img.shields.io/badge/platform-iOS%2016%2B-lightgrey.svg)](https://apps.apple.com/app/scripting/id1575361494)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 专为 iOS **Scripting** 打造的阿里云 CDT 流量监控、BSS 官方账单与 ECS 状态看板，采用原生 TypeScript + TSX 构建，支持 iOS 16+ 桌面全尺寸小组件与应用内只读控制台。
 
-> 💡 **v1.6.0**：手机端只读取阿里云用量、账单与 ECS 状态；VPS 保活、夜间休眠和熔断策略保持独立运行。手机不连接 VPS，也不会对 ECS 执行开机、关机或重启。
+> 💡 **v1.6.1**：手机端只读取阿里云用量、账单与 ECS 状态；VPS 保活、夜间休眠和熔断策略保持独立运行。手机不连接 VPS，也不会对 ECS 执行开机、关机或重启。
 
 ---
 
@@ -25,7 +25,7 @@
 - **🔒 零硬编码**：代码中无任何 AK/SK，首次打开自动弹出设置面板，支持**智能剪贴板识别提取**。凭据保存在 Scripting 本机 Storage；此项目未实现应用层加密，建议使用专用、最小权限的 RAM 凭据。
 - **📊 CDT 用量看板**：阿里云免费额度按地域分池；公开规则为内地 20 GB、非内地 200 GB，并按账号规则共享。本项目汇总接口返回的流量后按单一 `200 GB` 本地参考值计算，不会推算各地域免费额度池的真实余量。
 - **💰 BSS 账单查询**：读取阿里云账单接口返回的金额字段。月内数据约有 24 小时延迟且仅供参考，最终账单通常在次月 3 日 12:00 后可查；查询不可用时不会伪装成零费用。
-- **📅 每日账单查询**：可查看最近 7 日 ECS 与 EIP 分类结果。每日明细同样受账单出账延迟影响，不保证是最终金额。
+- **📅 每日账单查询**：可查看最近 7 日 ECS 与公网网络产品分类结果。查询按账号维度的产品类别汇总，不能按当前配置的 ECS 实例 ID 或其公网 IP 归因；每日明细同样受账单出账延迟影响，不保证是最终金额。
 - **💳 账户余额看板**：展示阿里云接口返回的可用余额与状态；查询失败时不影响用量和账单区域展示。
 - **🖥️ ECS 状态只读展示**：显示阿里云返回的实例状态；实例“已停止”不代表手机能够判断是谁或哪条策略停止了它。
 - **📏 两条流量参考线**：默认 200 GB 月用量参考值与 195 GB VPS 熔断参考线均可在设置中修改。它们只用于本机界面计算和提醒，不代表账号完整免费额度余额，不会操作 ECS，也不会同步或校验 VPS 配置。

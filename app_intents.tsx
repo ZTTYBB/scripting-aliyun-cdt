@@ -10,8 +10,16 @@ export const RefreshTrafficIntent = AppIntentManager.register({
   protocol: AppIntentProtocol.AppIntent,
   perform: async () => {
     try {
-      if (typeof Widget !== "undefined" && Widget.reloadAllTimelines) {
-        Widget.reloadAllTimelines()
+      if (typeof Widget !== "undefined") {
+        const widget = Widget as unknown as {
+          reloadAll?: () => unknown
+          reloadAllTimelines?: () => unknown
+        }
+        if (typeof widget.reloadAll === "function") {
+          await widget.reloadAll()
+        } else if (typeof widget.reloadAllTimelines === "function") {
+          await widget.reloadAllTimelines()
+        }
       }
     } catch (e) {
       console.error("RefreshTrafficIntent 失败:", e)

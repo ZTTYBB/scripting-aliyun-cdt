@@ -36,7 +36,7 @@ import {
 
 // ==================== 1. 本地存储配置管理 ====================
 
-const APP_VERSION = "1.6.0"
+const APP_VERSION = "1.6.1"
 
 interface AppConfig {
   accessKeyId: string
@@ -276,6 +276,8 @@ export interface DailyExpenseItem {
 export interface MonthlyBillInfo {
   billingCycle: string
   paymentAmount: string
+  // Optional so snapshots saved before this metadata was introduced still render safely.
+  paymentScope?: "monitoredProducts" | "allProducts"
   outstandingAmount: string
   currency: string
   ecsAmount: string
@@ -283,6 +285,27 @@ export interface MonthlyBillInfo {
   cdtAmount: string
   ecsDailyList: DailyExpenseItem[]
   eipDailyList: DailyExpenseItem[]
+}
+
+function getMonthlyBillPresentation(bill?: MonthlyBillInfo | null): { label: string; detail: string } {
+  if (bill?.paymentScope === "allProducts") {
+    return {
+      label: "本月全部产品费用",
+      detail: "当前全部产品账单查询结果（可能延迟）"
+    }
+  }
+
+  if (bill?.paymentScope === "monitoredProducts") {
+    return {
+      label: "本月监控产品费用",
+      detail: "仅含已识别的监控产品，不含其他阿里云产品（可能延迟）"
+    }
+  }
+
+  return {
+    label: "本月监控产品费用",
+    detail: "费用范围未标记，按监控产品费用显示；可能不含其他阿里云产品（请刷新确认）"
+  }
 }
 
 interface MonitorData {
@@ -357,18 +380,23 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
   const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
   const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
 
-  const ecsData = await aliyunRequest<{
-    Instances?: {
-      Instance?: ECSInstanceRecord[]
-    }
-  }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
-    InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
-    RegionId: config.regionId.trim()
-  })
+  // 查询 ECS 状态；失败时仍保留已成功获取的 CDT 用量。
+  let ecsStatus: MonitorData["ecsStatus"] = "Unknown"
+  let publicIp: string | undefined
+  try {
+    const ecsData = await aliyunRequest<{
+      Instances?: {
+        Instance?: ECSInstanceRecord[]
+      }
+    }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
+      InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
+      RegionId: config.regionId.trim()
+    })
 
-  const instance = ecsData.Instances?.Instance?.[0]
-  let ecsStatus = (instance?.Status as any) || "Unknown"
-  const publicIp = getInstancePublicIp(instance)
+    const instance = ecsData.Instances?.Instance?.[0]
+    ecsStatus = (instance?.Status as MonitorData["ecsStatus"]) || "Unknown"
+    publicIp = getInstancePublicIp(instance)
+  } catch {}
 
   // 纯统计模式：手机端仅只读拉取用量与账单，关机熔断由 VPS 独立守护
 
@@ -404,8 +432,9 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
 
     if (balRes?.Data) {
       const cash = parseFloat(balRes.Data.AvailableCashAmount || "0")
+      const availableAmount = parseFloat(balRes.Data.AvailableAmount || "")
       let status: "sufficient" | "low" | "arrears" = "sufficient"
-      if (cash <= 0) {
+      if (Number.isFinite(availableAmount) && availableAmount < 0) {
         status = "arrears"
       } else if (cash < 10) {
         status = "low"
@@ -457,6 +486,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
         }
       }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
         BillingCycle: cycle,
+        PageSize: 300,
         IsGroupByProduct: true
       }).catch(() => null)
 
@@ -521,7 +551,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
         return amt.toFixed(2)
       }
 
-      // QueryAccountBill daily results may lag and are provisional for the current month.
+      // QueryAccountBill returns daily product-category totals that may lag and are provisional for the current month.
       const ecsDailyList: DailyExpenseItem[] = []
       const eipDailyList: DailyExpenseItem[] = []
       const daysCount = Math.min(7, currentDay)
@@ -553,6 +583,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
                 BillingCycle: cycle,
                 Granularity: "DAILY",
                 BillingDate: q.dateStr,
+                PageSize: 300,
                 IsGroupByProduct: true
               }).catch(() => null)
 
@@ -624,6 +655,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
       financialBill = {
         billingCycle: cycle,
         paymentAmount: finalPayment.toFixed(2),
+        paymentScope: hasInfrastructureItems ? "monitoredProducts" : "allProducts",
         outstandingAmount: outstanding.toFixed(2),
         currency,
         ecsAmount: ecsTotal.toFixed(2),
@@ -911,7 +943,19 @@ function formatEstimate(value: number | null, precision: number = 2): string {
   return value === null ? "--" : value.toFixed(precision)
 }
 
-function formatUpdateTime(date: Date): string {
+function toValidDate(value: unknown): Date | null {
+  const date = value instanceof Date
+    ? value
+    : typeof value === "string" || typeof value === "number"
+      ? new Date(value)
+      : null
+
+  return date && !Number.isNaN(date.getTime()) ? date : null
+}
+
+function formatUpdateTime(value: Date | string | number | null | undefined): string {
+  const date = toValidDate(value)
+  if (!date) return "--:--"
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
 }
 
@@ -1327,6 +1371,51 @@ function AccessoryInlineWidget({ data }: { data: MonitorData }) {
   )
 }
 
+function AccessoryCircularWidget({ data }: { data: MonitorData }) {
+  return (
+    <ZStack
+      widgetBackground="clear"
+      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
+      alignment="center"
+    >
+      <TrafficRing
+        data={data}
+        size={50}
+        lineWidth={5}
+        value={`${Math.round(data.percentage)}%`}
+        caption="CDT"
+        valueFont={11}
+        captionFont={7}
+      />
+    </ZStack>
+  )
+}
+
+const WIDGET_RELOAD_INTERVAL_MS = 15 * 60 * 1000
+
+function presentWidget(element: any): void {
+  Widget.present(element, {
+    policy: "after",
+    date: new Date(Date.now() + WIDGET_RELOAD_INTERVAL_MS)
+  })
+}
+
+function presentMonitorWidget(data: MonitorData): void {
+  if (Widget.family === "accessoryInline") {
+    presentWidget(<AccessoryInlineWidget data={data} />)
+  } else if (Widget.family === "accessoryCircular") {
+    presentWidget(<AccessoryCircularWidget data={data} />)
+  } else if (Widget.family === "accessoryRectangular") {
+    presentWidget(<AccessoryRectangularWidget data={data} />)
+  } else if (Widget.family === "systemLarge") {
+    presentWidget(<LargeWidget data={data} />)
+  } else if (Widget.family === "systemMedium") {
+    presentWidget(<MediumWidget data={data} />)
+  } else {
+    presentWidget(<SmallWidget data={data} />)
+  }
+}
+
 // ==================== 5. Apple iOS 26 Liquid Glass 材质与动效系统 ====================
 
 declare const UIGlass: {
@@ -1357,6 +1446,15 @@ function liquidGlass(interactive: boolean = true) {
 }
 
 // ==================== 6. 设置配置面板视图 (Apple Liquid Glass Controls) ====================
+
+function maskAccessKeyId(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ""
+
+  const suffixLength = Math.min(4, Math.max(0, trimmed.length - 1))
+  const suffix = suffixLength > 0 ? trimmed.slice(-suffixLength) : ""
+  return `••••${suffix}`
+}
 
 function SettingsActionButton({
   label,
@@ -1709,7 +1807,7 @@ function SettingsComponent({
                 AccessKey ID
               </Text>
               <Text font="caption2" foregroundStyle={ak ? "secondaryLabel" : "systemBlue"} lineLimit={1}>
-                {ak ? ak : "轻点右侧设置 >"}
+                {ak ? maskAccessKeyId(ak) : "轻点右侧设置 >"}
               </Text>
             </VStack>
             <SettingsActionButton
@@ -1786,7 +1884,7 @@ function SettingsComponent({
               label={ecsId ? "修改" : "设置"}
               accessibilityLabel="设置 ECS 实例 ID"
               action={() =>
-                promptField("设置 ECS 实例 ID", "请输入您要控制的 ECS 实例 ID", ecsId, "i-xxxxxxxxxxxx", setEcsId)
+                promptField("设置 ECS 实例 ID", "请输入要监控状态的 ECS 实例 ID", ecsId, "i-xxxxxxxxxxxx", setEcsId)
               }
             />
           </HStack>
@@ -1940,14 +2038,21 @@ function SettingsComponent({
 
 // ==================== 7. 控制台仪表盘主视图 (Apple iOS 26 Liquid Glass System) ====================
 
+function restoreCachedMonitorData(raw: unknown): MonitorData | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
+
+  const updatedAt = toValidDate((raw as { updatedAt?: unknown }).updatedAt)
+  return updatedAt ? { ...(raw as MonitorData), updatedAt } : null
+}
+
 function getCachedDashboardSnapshot(): { data: MonitorData | null; lastUpdated: Date | null } {
   try {
     if (typeof Storage !== "undefined" && Storage?.get) {
       const raw = Storage.get(SNAPSHOT_STORAGE_KEY)
       if (raw) {
-        const parsed: MonitorData = typeof raw === "string" ? JSON.parse(raw) : raw
-        const ts = parsed.updatedAt ? new Date(parsed.updatedAt) : null
-        return { data: parsed, lastUpdated: ts }
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
+        const data = restoreCachedMonitorData(parsed)
+        return { data, lastUpdated: data?.updatedAt || null }
       }
     }
   } catch {}
@@ -1962,6 +2067,7 @@ function AppDashboard() {
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(initialCache.lastUpdated)
+  const financialBillPresentation = getMonthlyBillPresentation(data?.financialBill)
   const [isPrivacy, setIsPrivacy] = useState<boolean>(() => {
     try {
       return typeof Storage !== "undefined" && Storage.get(PRIVACY_STORAGE_KEY) === "true"
@@ -2028,22 +2134,22 @@ function AppDashboard() {
     })
 
     const msg = [
-      `ECS 实例 ID: ${config.ecsInstanceId}`,
-      `本月账单查询结果: ${total}`,
+      `本月 ECS 产品账单查询结果: ${total}`,
+      "说明：按账号维度汇总 ECS 产品费用，非当前配置的单台实例费用。",
       "",
-      "【每日账单查询结果】",
+      "【最近每日产品账单查询结果（可能延迟）】",
       lines.length > 0
         ? lines.join("\n")
         : data?.financialBillStatus === "available"
-          ? "暂无每日明细数据"
+          ? "暂无每日产品账单数据"
           : "账单查询不可用",
       "",
-      "注：当月账单查询结果仅供参考；QueryAccountBill 数据约延迟 24 小时。最终账单次月 3 日 12 点后可查。"
+      "注：账单按产品分类汇总，不能归因到当前 ECS 实例；月内数据有延迟且仅供参考，最终金额以阿里云账单中心出账结果为准。"
     ].join("\n")
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
       await Dialog.alert({
-        title: "🖥️ ECS 每日账单查询结果",
+        title: "🖥️ ECS 产品费用明细",
         message: msg
       })
     }
@@ -2079,22 +2185,22 @@ function AppDashboard() {
     })
 
     const msg = [
-      `公网 IP: ${data?.publicIp || "弹性公网 IP"}`,
-      `本月账单查询结果: ${total}`,
+      `本月公网网络产品账单查询结果: ${total}`,
+      "说明：按账号维度汇总公网网络产品费用，非当前配置公网 IP 的单独费用。",
       "",
-      "【每日账单查询结果】",
+      "【最近每日产品账单查询结果（可能延迟）】",
       lines.length > 0
         ? lines.join("\n")
         : data?.financialBillStatus === "available"
-          ? "暂无每日明细数据"
+          ? "暂无每日产品账单数据"
           : "账单查询不可用",
       "",
-      "注：当月账单查询结果仅供参考；QueryAccountBill 数据约延迟 24 小时。最终账单次月 3 日 12 点后可查。"
+      "注：账单按产品分类汇总，不能归因到当前公网 IP；月内数据有延迟且仅供参考，最终金额以阿里云账单中心出账结果为准。"
     ].join("\n")
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
       await Dialog.alert({
-        title: "🌐 弹性 IP 每日账单查询结果",
+        title: "🌐 公网网络产品费用明细",
         message: msg
       })
     }
@@ -2230,7 +2336,7 @@ function AppDashboard() {
               </ZStack>
               <VStack alignment="leading" spacing={1}>
                 <Text font="headline" bold foregroundStyle="label">
-                  阿里云 CDT 智控台
+                  阿里云 CDT 监控
                 </Text>
                 <Text font={10} foregroundStyle="secondaryLabel">
                   {loading
@@ -2250,20 +2356,15 @@ function AppDashboard() {
                 buttonStyle="plain"
                 accessibilityLabel="刷新数据"
               >
-                <HStack
-                  spacing={4}
-                  padding={{ horizontal: 10, vertical: 6 }}
+                <ZStack
+                  frame={{ width: 44, height: 44 }}
                   background="rgba(0, 122, 255, 0.10)"
                   border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
                   clipShape={{ type: "capsule" }}
-                  alignment="center"
                   {...liquidGlass(true)}
                 >
-                  <Image systemName="arrow.clockwise" font={12} foregroundStyle="systemBlue" />
-                  <Text font="caption1" bold foregroundStyle="systemBlue">
-                    {loading ? "同步中" : "刷新"}
-                  </Text>
-                </HStack>
+                  <Image systemName="arrow.clockwise" font={16} foregroundStyle="systemBlue" />
+                </ZStack>
               </Button>
               {/* 设置入口 */}
               <Button
@@ -2271,18 +2372,15 @@ function AppDashboard() {
                 buttonStyle="plain"
                 accessibilityLabel="设置"
               >
-                <HStack
-                  spacing={4}
-                  padding={{ horizontal: 10, vertical: 6 }}
+                <ZStack
+                  frame={{ width: 44, height: 44 }}
                   background="rgba(0, 122, 255, 0.10)"
                   border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
                   clipShape={{ type: "capsule" }}
-                  alignment="center"
                   {...liquidGlass(true)}
                 >
-                  <Image systemName="gearshape.fill" font={12} foregroundStyle="systemBlue" />
-                  <Text font="caption1" bold foregroundStyle="systemBlue">设置</Text>
-                </HStack>
+                  <Image systemName="gearshape.fill" font={16} foregroundStyle="systemBlue" />
+                </ZStack>
               </Button>
             </HStack>
           </HStack>
@@ -2515,7 +2613,7 @@ function AppDashboard() {
                   {/* 当月实际扣费支出 */}
                   <VStack alignment="leading" spacing={4} padding={{ leading: 16 }} frame={{ maxWidth: Infinity }}>
                     <Text font={12} foregroundStyle="secondaryLabel">
-                      本月账单查询金额
+                      {financialBillPresentation.label}
                     </Text>
                     <HStack alignment="lastTextBaseline" spacing={3}>
                       {data.financialBillStatus === "available" && (
@@ -2553,22 +2651,20 @@ function AppDashboard() {
                     >
                       {data.financialBillStatus !== "available"
                         ? "账单查询不可用"
-                        : data.financialBill && parseFloat(data.financialBill.paymentAmount) !== 0
-                          ? "本月账单查询结果"
-                          : "查询金额为 0（当月仅供参考）"}
+                        : financialBillPresentation.detail}
                     </Text>
                   </VStack>
                 </HStack>
 
                 <Divider padding={{ horizontal: 16 }} />
 
-                {/* ECS 实例与弹性 IP 分拆费用微晶卡片 (支持轻触弹窗查看每日明细) */}
+                {/* ECS 与公网网络产品费用卡片（支持轻触查看每日产品账单分类） */}
                 <HStack padding={{ horizontal: 14, vertical: 10 }} spacing={10}>
-                  {/* ECS 实例费用微晶卡片 */}
+                  {/* ECS 产品费用微晶卡片 */}
                   <Button
                     action={handleShowEcsDaily}
                     buttonStyle="plain"
-                    accessibilityLabel="查看 ECS 每日账单查询结果"
+                    accessibilityLabel="查看 ECS 产品每日费用明细"
                     frame={{ maxWidth: Infinity }}
                   >
                     <HStack
@@ -2585,7 +2681,7 @@ function AppDashboard() {
                       </ZStack>
                       <VStack alignment="leading" spacing={1} frame={{ maxWidth: Infinity }}>
                         <HStack alignment="center" spacing={3}>
-                          <Text font={11} foregroundStyle="secondaryLabel">实例费用</Text>
+                          <Text font={11} foregroundStyle="secondaryLabel">ECS 产品</Text>
                           <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
                         </HStack>
                         <Text font={14} bold foregroundStyle="label">
@@ -2599,11 +2695,11 @@ function AppDashboard() {
                     </HStack>
                   </Button>
 
-                  {/* 弹性 IP 费用微晶卡片 */}
+                  {/* 公网网络产品费用微晶卡片 */}
                   <Button
                     action={handleShowEipDaily}
                     buttonStyle="plain"
-                    accessibilityLabel="查看弹性 IP 每日账单查询结果"
+                    accessibilityLabel="查看公网网络产品每日费用明细"
                     frame={{ maxWidth: Infinity }}
                   >
                     <HStack
@@ -2620,7 +2716,7 @@ function AppDashboard() {
                       </ZStack>
                       <VStack alignment="leading" spacing={1} frame={{ maxWidth: Infinity }}>
                         <HStack alignment="center" spacing={3}>
-                          <Text font={11} foregroundStyle="secondaryLabel">弹性 IP</Text>
+                          <Text font={11} foregroundStyle="secondaryLabel">公网网络</Text>
                           <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
                         </HStack>
                         <Text font={14} bold foregroundStyle="label">
@@ -2636,7 +2732,7 @@ function AppDashboard() {
                 </HStack>
               </VStack>
               <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-                当月查询仅供参考；QueryAccountBill 数据约延迟 24 小时，最终账单次月 3 日 12 点后可查。轻触费用项可查看每日查询结果与日均推算。
+                轻触 ECS 产品或公网网络卡片可查看最近每日账单分类；结果按账号汇总，非单实例或单 IP 费用。
               </Text>
             </>
           )}
@@ -2820,37 +2916,6 @@ function AppDashboard() {
             </Text>
           </HStack>
 
-          {/* 刷新控制台操作按钮 (Liquid Glass Capsule) */}
-          <HStack padding={{ top: 8, bottom: 16 }} alignment="center">
-            <Spacer />
-            <Button
-              action={() => refresh(config)}
-              disabled={loading}
-              buttonStyle="plain"
-            >
-              <HStack
-                spacing={6}
-                padding={{ horizontal: 16, vertical: 8 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                alignment="center"
-                {...liquidGlass(true)}
-              >
-                <Image
-                  systemName="arrow.clockwise"
-                  font={13}
-                  fontWeight="bold"
-                  foregroundStyle="systemBlue"
-                />
-                <Text font="subheadline" bold foregroundStyle="systemBlue">
-                  {loading ? "同步数据中..." : "刷新控制台数据"}
-                </Text>
-              </HStack>
-            </Button>
-            <Spacer />
-          </HStack>
-
           {/* 版本与构建信息 */}
           <VStack alignment="center" spacing={2} padding={{ top: 8, bottom: 20 }}>
             <Text font={11} foregroundStyle="quaternaryLabel">
@@ -2872,21 +2937,11 @@ async function main() {
     try {
       const config = loadSavedConfig()
       if (!isConfigReady(config)) {
-        Widget.present(<NotConfiguredWidget />)
+        presentWidget(<NotConfiguredWidget />)
         return
       }
       const data = await fetchMonitorData(config)
-      if (Widget.family === "accessoryInline") {
-        Widget.present(<AccessoryInlineWidget data={data} />)
-      } else if (Widget.family === "accessoryRectangular") {
-        Widget.present(<AccessoryRectangularWidget data={data} />)
-      } else if (Widget.family === "systemLarge") {
-        Widget.present(<LargeWidget data={data} />)
-      } else if (Widget.family === "systemMedium") {
-        Widget.present(<MediumWidget data={data} />)
-      } else {
-        Widget.present(<SmallWidget data={data} />)
-      }
+      presentMonitorWidget(data)
     } catch (err: any) {
       console.error("小组件加载失败:", err)
       // 弱网容灾：尝试降级渲染本地持久化快照，避免组件变红
@@ -2894,24 +2949,17 @@ async function main() {
         if (typeof Storage !== "undefined" && Storage?.get) {
           const raw = Storage.get(SNAPSHOT_STORAGE_KEY)
           if (raw) {
-            const cached = typeof raw === "string" ? JSON.parse(raw) : raw
-            if (Widget.family === "accessoryInline") {
-              Widget.present(<AccessoryInlineWidget data={cached} />)
-            } else if (Widget.family === "accessoryRectangular") {
-              Widget.present(<AccessoryRectangularWidget data={cached} />)
-            } else if (Widget.family === "systemLarge") {
-              Widget.present(<LargeWidget data={cached} />)
-            } else if (Widget.family === "systemMedium") {
-              Widget.present(<MediumWidget data={cached} />)
-            } else {
-              Widget.present(<SmallWidget data={cached} />)
+            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
+            const cached = restoreCachedMonitorData(parsed)
+            if (cached) {
+              presentMonitorWidget(cached)
+              return
             }
-            return
           }
         }
       } catch {}
 
-      Widget.present(
+      presentWidget(
         <VStack
           alignment="leading"
           spacing={6}
