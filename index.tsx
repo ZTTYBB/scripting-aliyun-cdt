@@ -287,6 +287,15 @@ export interface MonthlyBillInfo {
   eipDailyList: DailyExpenseItem[]
 }
 
+interface MonthlyBillHistoryItem {
+  billingCycle: string
+  paymentAmount: string
+  currency: string
+  available: boolean
+  hasRecords?: boolean
+  paymentScope?: "monitoredProducts" | "allProducts"
+}
+
 function getMonthlyBillPresentation(bill?: MonthlyBillInfo | null): { label: string; detail: string } {
   if (bill?.paymentScope === "allProducts") {
     return {
@@ -308,8 +317,132 @@ function getMonthlyBillPresentation(bill?: MonthlyBillInfo | null): { label: str
   }
 }
 
+function currencySymbol(currency?: string): string {
+  if (currency === "USD") return "$"
+  if (currency === "CNY" || !currency) return "¥"
+  return `${currency} `
+}
+
 function isBillQueryAvailable(response: any): boolean {
-  return Boolean(response?.Data && response?.Success === true && response?.Code === "Success")
+  if (!response?.Data) return false
+  if (response.Success === false) return false
+  if (response.Code && response.Code !== "Success") return false
+  return true
+}
+
+async function queryBillItemsForCycle(
+  config: AppConfig,
+  billingCycle: string
+): Promise<{ available: boolean; items: Array<any> }> {
+  let available = false
+  let items: Array<any> = []
+
+  const overviewRes = await aliyunRequest<{
+    Data?: {
+      Items?: {
+        Item?: Array<any>
+      }
+    }
+    Success?: boolean
+    Code?: string
+  }>("business.aliyuncs.com", "QueryBillOverview", "2017-12-14", config, {
+    BillingCycle: billingCycle
+  }).catch(() => null)
+
+  if (isBillQueryAvailable(overviewRes)) {
+    available = true
+    items = overviewRes?.Data?.Items?.Item || []
+  }
+
+  // QueryBillOverview can be authorized but return no product rows; the
+  // account bill endpoint is a compatible fallback for those accounts.
+  if (items.length === 0) {
+    const billRes = await aliyunRequest<{
+      Data?: {
+        Items?: {
+          Item?: Array<any>
+        }
+      }
+      Success?: boolean
+      Code?: string
+    }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
+      BillingCycle: billingCycle,
+      PageSize: 300,
+      IsGroupByProduct: true
+    }).catch(() => null)
+
+    if (isBillQueryAvailable(billRes)) {
+      available = true
+      items = billRes?.Data?.Items?.Item || []
+    }
+  }
+
+  return { available, items }
+}
+
+interface BillSummary {
+  paymentAmount: number
+  outstandingAmount: number
+  currency: string
+  ecsAmount: number
+  eipAmount: number
+  cdtAmount: number
+  paymentScope: "monitoredProducts" | "allProducts"
+}
+
+function summarizeBillItems(items: Array<any>, includeAllProducts = false): BillSummary {
+  let allProductsEffective = 0
+  let ecsTotal = 0
+  let eipTotal = 0
+  let cdtTotal = 0
+  let hasInfrastructureItems = false
+  let outstanding = 0
+  let currency = "CNY"
+
+  for (const item of items) {
+    const code = String(item?.PipCode || item?.ProductCode || "").toLowerCase()
+    const name = String(item?.ProductName || "")
+    const gross = Number(item?.PretaxGrossAmount || 0)
+    const effective =
+      item?.PretaxAmount !== undefined && item?.PretaxAmount !== null && item?.PretaxAmount !== ""
+        ? Number(item.PretaxAmount) || 0
+        : item?.PaymentAmount !== undefined && item?.PaymentAmount !== null && item?.PaymentAmount !== ""
+          ? Number(item.PaymentAmount) || 0
+          : gross
+
+    allProductsEffective += effective
+    outstanding += Number(item?.OutstandingAmount || 0)
+    if (item?.Currency) currency = String(item.Currency)
+
+    const isEcs = code === "ecs" || code.includes("ecs") || name.includes("云服务器") || name.includes("ECS")
+    const isEip =
+      code === "eip" ||
+      code === "cbwp" ||
+      code.includes("eip") ||
+      code.includes("cbwp") ||
+      name.includes("弹性公网") ||
+      name.includes("EIP") ||
+      name.includes("公网IP") ||
+      name.includes("共享带宽")
+    const isCdt = code === "cdt" || code.includes("cdt") || name.includes("云数据传输") || name.includes("CDT")
+
+    if (isEcs || isEip || isCdt) hasInfrastructureItems = true
+    if (isEcs) ecsTotal += effective
+    else if (isEip) eipTotal += effective
+    else if (isCdt) cdtTotal += effective
+  }
+
+  return {
+    paymentAmount: includeAllProducts || !hasInfrastructureItems
+      ? allProductsEffective
+      : ecsTotal + eipTotal + cdtTotal,
+    outstandingAmount: outstanding,
+    currency,
+    ecsAmount: ecsTotal,
+    eipAmount: eipTotal,
+    cdtAmount: cdtTotal,
+    paymentScope: includeAllProducts || !hasInfrastructureItems ? "allProducts" : "monitoredProducts"
+  }
 }
 
 interface ConsoleData {
@@ -329,6 +462,9 @@ interface ConsoleData {
   financialBalance?: AccountBalanceInfo | null
   financialBill?: MonthlyBillInfo | null
   financialBillStatus: "available" | "unavailable"
+  previousFinancialBill?: MonthlyBillInfo | null
+  previousFinancialBillStatus: "available" | "unavailable"
+  financialBillHistory: MonthlyBillHistoryItem[]
   trafficDiagnostics?: CDTTrafficDiagnostics
 }
 
@@ -530,6 +666,9 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   let financialBalance: AccountBalanceInfo | null = null
   let financialBill: MonthlyBillInfo | null = null
   let financialBillStatus: "available" | "unavailable" = "unavailable"
+  let previousFinancialBill: MonthlyBillInfo | null = null
+  let previousFinancialBillStatus: "available" | "unavailable" = "unavailable"
+  let financialBillHistory: MonthlyBillHistoryItem[] = []
 
   try {
     const balRes = await aliyunRequest<{
@@ -585,7 +724,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
     }).catch(() => null)
 
     if (isBillQueryAvailable(overviewRes)) financialBillStatus = "available"
-    if (overviewRes?.Data?.Items?.Item && overviewRes.Data.Items.Item.length > 0) {
+    if (isBillQueryAvailable(overviewRes) && overviewRes?.Data?.Items?.Item && overviewRes.Data.Items.Item.length > 0) {
       billItems = overviewRes.Data.Items.Item
     } else {
       // 2. 回退调用 QueryAccountBill（带 IsGroupByProduct: true 才能返回产品维度分类）
@@ -602,56 +741,13 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
       }).catch(() => null)
 
       if (isBillQueryAvailable(billRes)) financialBillStatus = "available"
-      if (billRes?.Data?.Items?.Item && billRes.Data.Items.Item.length > 0) {
+      if (isBillQueryAvailable(billRes) && billRes?.Data?.Items?.Item && billRes.Data.Items.Item.length > 0) {
         billItems = billRes.Data.Items.Item
       }
     }
 
-      let allProductsEffective = 0
-      let ecsTotal = 0
-      let eipTotal = 0
-      let cdtTotal = 0
-      let hasInfrastructureItems = false
-      let outstanding = 0
-      let currency = "CNY"
-
-      for (const it of billItems) {
-        const code = String(it.PipCode || it.ProductCode || "").toLowerCase()
-        const name = String(it.ProductName || "")
-        const gross = Number(it.PretaxGrossAmount || 0)
-        // 关键：必须优先取 PretaxAmount（实际应付金额：已扣减抢占式竞价折扣、优惠券，如抢占式单日 ¥0.13，月度 ¥0.40）
-        let effective = 0
-        if (it.PretaxAmount !== undefined && it.PretaxAmount !== null && it.PretaxAmount !== "") {
-          effective = Number(it.PretaxAmount) || 0
-        } else if (it.PaymentAmount !== undefined && it.PaymentAmount !== null && it.PaymentAmount !== "") {
-          effective = Number(it.PaymentAmount) || 0
-        } else {
-          effective = gross
-        }
-
-        allProductsEffective += effective
-        outstanding += Number(it.OutstandingAmount || 0)
-        if (it.Currency) currency = it.Currency
-
-        const isEcs = code === "ecs" || code.includes("ecs") || name.includes("云服务器") || name.includes("ECS")
-        const isEip = code === "eip" || code === "cbwp" || code.includes("eip") || code.includes("cbwp") || name.includes("弹性公网") || name.includes("EIP") || name.includes("公网IP") || name.includes("共享带宽")
-        const isCdt = code === "cdt" || code.includes("cdt") || name.includes("云数据传输") || name.includes("CDT")
-
-        if (isEcs || isEip || isCdt) hasInfrastructureItems = true
-        if (isEcs) {
-          ecsTotal += effective
-        } else if (isEip) {
-          eipTotal += effective
-        } else if (isCdt) {
-          cdtTotal += effective
-        }
-      }
-
-      // 保留接口返回的零金额；仅在没有可分类产品时使用全产品合计。
-      const infrastructureTotal = ecsTotal + eipTotal + cdtTotal
-      const finalPayment = hasInfrastructureItems
-        ? infrastructureTotal
-        : allProductsEffective
+      const currentSummary = summarizeBillItems(billItems)
+      const finalPayment = currentSummary.paymentAmount
       const canQueryDailyBill = financialBillStatus === "available"
 
       const formatDaily = (amt: number): string => {
@@ -761,21 +857,122 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
         }
       }
 
-    if (canQueryDailyBill) {
+    if (canQueryDailyBill && billItems.length > 0) {
       financialBill = {
         billingCycle: cycle,
         paymentAmount: finalPayment.toFixed(2),
-        paymentScope: hasInfrastructureItems ? "monitoredProducts" : "allProducts",
-        outstandingAmount: outstanding.toFixed(2),
-        currency,
-        ecsAmount: ecsTotal.toFixed(2),
-        eipAmount: eipTotal.toFixed(2),
-        cdtAmount: cdtTotal.toFixed(2),
+        paymentScope: currentSummary.paymentScope,
+        outstandingAmount: currentSummary.outstandingAmount.toFixed(2),
+        currency: currentSummary.currency,
+        ecsAmount: currentSummary.ecsAmount.toFixed(2),
+        eipAmount: currentSummary.eipAmount.toFixed(2),
+        cdtAmount: currentSummary.cdtAmount.toFixed(2),
         ecsDailyList,
         eipDailyList
       }
     }
   } catch {}
+
+  // 账期已结束的上月金额单独查询。余额接口不会返回扣费历史，不能用余额变化代替账单。
+  try {
+    const previousDate = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    const previousCycle = `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, "0")}`
+    let previousItems: Array<any> = []
+
+    const previousOverview = await aliyunRequest<{
+      Data?: { Items?: { Item?: Array<any> } }
+      Success?: boolean
+      Code?: string
+    }>("business.aliyuncs.com", "QueryBillOverview", "2017-12-14", config, {
+      BillingCycle: previousCycle
+    }).catch(() => null)
+
+    if (isBillQueryAvailable(previousOverview)) previousFinancialBillStatus = "available"
+    if (isBillQueryAvailable(previousOverview) && previousOverview?.Data?.Items?.Item && previousOverview.Data.Items.Item.length > 0) {
+      previousItems = previousOverview.Data.Items.Item
+    } else {
+      const previousBill = await aliyunRequest<{
+        Data?: { Items?: { Item?: Array<any> } }
+        Success?: boolean
+        Code?: string
+      }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
+        BillingCycle: previousCycle,
+        PageSize: 300,
+        IsGroupByProduct: true
+      }).catch(() => null)
+
+      if (isBillQueryAvailable(previousBill)) previousFinancialBillStatus = "available"
+      if (isBillQueryAvailable(previousBill) && previousBill?.Data?.Items?.Item && previousBill.Data.Items.Item.length > 0) {
+        previousItems = previousBill.Data.Items.Item
+      }
+    }
+
+    if (previousFinancialBillStatus === "available" && previousItems.length > 0) {
+      const summary = summarizeBillItems(previousItems, true)
+      previousFinancialBill = {
+        billingCycle: previousCycle,
+        paymentAmount: summary.paymentAmount.toFixed(2),
+        paymentScope: summary.paymentScope,
+        outstandingAmount: summary.outstandingAmount.toFixed(2),
+        currency: summary.currency,
+        ecsAmount: summary.ecsAmount.toFixed(2),
+        eipAmount: summary.eipAmount.toFixed(2),
+        cdtAmount: summary.cdtAmount.toFixed(2),
+        ecsDailyList: [],
+        eipDailyList: []
+      }
+    }
+  } catch {}
+
+  // 余额卡片点击后展示最近几个账期。当前月和上月复用上面的查询结果，
+  // 只额外查询更早的两个账期，避免每次刷新重复请求同一月份。
+  const currentCycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+  financialBillHistory = [
+    {
+      billingCycle: currentCycle,
+      paymentAmount: financialBill?.paymentAmount || "0.00",
+      currency: financialBill?.currency || financialBalance?.currency || "CNY",
+      available: financialBillStatus === "available",
+      hasRecords: Boolean(financialBill),
+      paymentScope: financialBill?.paymentScope
+    },
+    {
+      billingCycle: previousFinancialBill?.billingCycle || (() => {
+        const previousDate = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+        return `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, "0")}`
+      })(),
+      paymentAmount: previousFinancialBill?.paymentAmount || "0.00",
+      currency: previousFinancialBill?.currency || financialBalance?.currency || "CNY",
+      available: previousFinancialBillStatus === "available",
+      hasRecords: Boolean(previousFinancialBill),
+      paymentScope: previousFinancialBill?.paymentScope
+    }
+  ]
+
+  for (const monthOffset of [2, 3]) {
+    const historyDate = new Date(now.getFullYear(), now.getMonth() - monthOffset, 1)
+    const billingCycle = `${historyDate.getFullYear()}-${String(historyDate.getMonth() + 1).padStart(2, "0")}`
+    try {
+      const result = await queryBillItemsForCycle(config, billingCycle)
+      const summary = result.items.length > 0 ? summarizeBillItems(result.items, true) : null
+      financialBillHistory.push({
+        billingCycle,
+        paymentAmount: summary ? summary.paymentAmount.toFixed(2) : "0.00",
+        currency: summary?.currency || financialBalance?.currency || "CNY",
+        available: result.available,
+        hasRecords: result.items.length > 0,
+        paymentScope: summary?.paymentScope
+      })
+    } catch {
+      financialBillHistory.push({
+        billingCycle,
+        paymentAmount: "0.00",
+        currency: financialBalance?.currency || "CNY",
+        available: false,
+        hasRecords: false
+      })
+    }
+  }
 
   const color = totalGB >= vpsCutoffReferenceGB
     ? "systemRed"
@@ -800,6 +997,9 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
     financialBalance,
     financialBill,
     financialBillStatus,
+    previousFinancialBill,
+    previousFinancialBillStatus,
+    financialBillHistory,
     trafficDiagnostics
   }
 }
@@ -1762,6 +1962,38 @@ function getCachedConsoleSnapshot(): { data: ConsoleData | null; lastUpdated: Da
         if (parsed.financialBillStatus !== "available") {
           parsed.financialBillStatus = "unavailable"
         }
+        if (parsed.previousFinancialBillStatus !== "available") {
+          parsed.previousFinancialBillStatus = "unavailable"
+        }
+        if (!Array.isArray(parsed.financialBillHistory)) {
+          parsed.financialBillHistory = []
+          if (parsed.financialBill?.billingCycle) {
+            parsed.financialBillHistory.push({
+              billingCycle: parsed.financialBill.billingCycle,
+              paymentAmount: parsed.financialBill.paymentAmount || "0.00",
+              currency: parsed.financialBill.currency || "CNY",
+              available: parsed.financialBillStatus === "available",
+              hasRecords: true,
+              paymentScope: parsed.financialBill.paymentScope
+            })
+          }
+          if (parsed.previousFinancialBill?.billingCycle) {
+            parsed.financialBillHistory.push({
+              billingCycle: parsed.previousFinancialBill.billingCycle,
+              paymentAmount: parsed.previousFinancialBill.paymentAmount || "0.00",
+              currency: parsed.previousFinancialBill.currency || "CNY",
+              available: parsed.previousFinancialBillStatus === "available",
+              hasRecords: true,
+              paymentScope: parsed.previousFinancialBill.paymentScope
+            })
+          }
+        } else {
+          parsed.financialBillHistory = parsed.financialBillHistory.map(item => ({
+            ...item,
+            available: item.available !== false,
+            hasRecords: item.hasRecords !== false
+          }))
+        }
         for (const list of [parsed.financialBill?.ecsDailyList, parsed.financialBill?.eipDailyList]) {
           for (const item of list || []) {
             if (typeof item.available !== "boolean") item.available = false
@@ -1827,6 +2059,52 @@ function ConsoleView() {
     } catch {}
   }
 
+  const handleShowBillHistory = async () => {
+    try {
+      if (typeof Haptic !== "undefined" && (Haptic as any)?.impact) {
+        ;(Haptic as any).impact("light")
+      }
+    } catch {}
+
+    const history = data?.financialBillHistory || []
+    const currentDate = new Date()
+    const currentCycle = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, "0")}`
+    const previousDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1)
+    const previousCycle = `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, "0")}`
+    const lines = history.map(item => {
+      const amount = !item.available
+        ? "查询不可用"
+        : item.hasRecords === false
+          ? "暂无记录"
+          : isPrivacy
+            ? "****"
+            : `${currencySymbol(item.currency)}${item.paymentAmount}`
+      const label = item.billingCycle === currentCycle
+        ? "本月累计"
+        : item.billingCycle === previousCycle
+          ? "上月账期"
+          : "历史账期"
+      const scope = item.available && item.hasRecords !== false
+        ? item.paymentScope === "allProducts"
+          ? " · 全部产品"
+          : item.paymentScope === "monitoredProducts"
+            ? " · 监控产品"
+            : " · 费用范围未标记"
+        : ""
+      return `${item.billingCycle}  ${label}：${amount}${scope}`
+    })
+
+    const message = [
+      lines.length > 0 ? lines.join("\n") : "暂无近期账单快照，请刷新后重试。",
+      "",
+      "金额来自阿里云 BSS 账期账单，不是银行卡或余额的实际扣款流水。本月数据可能延迟；已结束月份也可能尚未完成出账，以阿里云账单中心为准。"
+    ].join("\n")
+
+    if (typeof Dialog !== "undefined" && Dialog.alert) {
+      await Dialog.alert({ title: "近期账单", message })
+    }
+  }
+
   const handleShowEcsDaily = async () => {
     try {
       if (typeof Haptic !== "undefined" && (Haptic as any)?.impact) {
@@ -1837,11 +2115,17 @@ function ConsoleView() {
     const list = data?.financialBill?.ecsDailyList || []
     const total = data?.financialBillStatus === "unavailable"
       ? "暂不可用"
+      : !data?.financialBill
+        ? "暂无记录"
       : isPrivacy
         ? "****"
-        : `¥${data?.financialBill?.ecsAmount || "0.00"}`
+        : `${currencySymbol(data.financialBill.currency)}${data.financialBill.ecsAmount}`
     const lines = list.map(item => {
-      const amt = item.available === false ? "—" : isPrivacy ? "****" : `¥${item.amount}`
+      const amt = item.available === false
+        ? "—"
+        : isPrivacy
+          ? "****"
+          : `${currencySymbol(data?.financialBill?.currency)}${item.amount}`
       let tag = ""
       if (item.available === false) {
         tag = " (查询失败)"
@@ -1883,11 +2167,17 @@ function ConsoleView() {
     const list = data?.financialBill?.eipDailyList || []
     const total = data?.financialBillStatus === "unavailable"
       ? "暂不可用"
+      : !data?.financialBill
+        ? "暂无记录"
       : isPrivacy
         ? "****"
-        : `¥${data?.financialBill?.eipAmount || "0.00"}`
+        : `${currencySymbol(data.financialBill.currency)}${data.financialBill.eipAmount}`
     const lines = list.map(item => {
-      const amt = item.available === false ? "—" : isPrivacy ? "****" : `¥${item.amount}`
+      const amt = item.available === false
+        ? "—"
+        : isPrivacy
+          ? "****"
+          : `${currencySymbol(data?.financialBill?.currency)}${item.amount}`
       let tag = ""
       if (item.available === false) {
         tag = " (查询失败)"
@@ -2249,68 +2539,91 @@ function ConsoleView() {
               <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface()}>
                 <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center">
                   {/* 可用现金余额 */}
-                  {data.financialBalance && (
-                  <VStack alignment="leading" spacing={4} frame={{ maxWidth: Infinity }}>
-                    <Text font={12} foregroundStyle="secondaryLabel">
-                      账户现金余额
-                    </Text>
-                    <HStack alignment="lastTextBaseline" spacing={3}>
-                      <Text font={14} bold foregroundStyle={data.financialBalance.status === "arrears" ? "systemRed" : "label"}>
-                        {data.financialBalance.currency === "USD" ? "$" : "¥"}
-                      </Text>
-                      <Text font={22} bold foregroundStyle={data.financialBalance.status === "arrears" ? "systemRed" : "label"}>
-                        {isPrivacy ? "****" : data.financialBalance.availableCashAmount}
-                      </Text>
-                    </HStack>
-                    <HStack spacing={4} alignment="center">
-                      <Circle
-                        fill={
-                          data.financialBalance.status === "sufficient"
-                            ? "systemGreen"
-                            : data.financialBalance.status === "low"
-                              ? "systemOrange"
-                              : "systemRed"
-                        }
-                        frame={{ width: 6, height: 6 }}
-                      />
-                      <Text
-                        font={11}
-                        foregroundStyle={
-                          data.financialBalance.status === "sufficient"
-                            ? "systemGreen"
-                            : data.financialBalance.status === "low"
-                              ? "systemOrange"
-                              : "systemRed"
-                        }
-                      >
-                        {data.financialBalance.status === "sufficient"
-                          ? "资金充足"
-                          : data.financialBalance.status === "low"
-                            ? "余额偏低"
-                            : "已欠费"}
-                      </Text>
-                    </HStack>
-                  </VStack>
-                  )}
-                  {data.financialBalance && <Divider frame={{ height: 44 }} />}
+                  <Button
+                    action={handleShowBillHistory}
+                    buttonStyle="plain"
+                    accessibilityLabel="查看最近四个月的账期费用"
+                    frame={{ maxWidth: Infinity }}
+                  >
+                    <VStack alignment="leading" spacing={4} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                      <HStack alignment="center" spacing={4}>
+                        <Text font={12} foregroundStyle="secondaryLabel">
+                          账户现金余额
+                        </Text>
+                        <Image systemName="chevron.right" font={9} foregroundStyle="tertiaryLabel" />
+                      </HStack>
+                      {data.financialBalance ? (
+                        <>
+                          <HStack alignment="lastTextBaseline" spacing={3}>
+                            <Text font={14} bold foregroundStyle={data.financialBalance.status === "arrears" ? "systemRed" : "label"}>
+                              {currencySymbol(data.financialBalance.currency)}
+                            </Text>
+                            <Text font={22} bold foregroundStyle={data.financialBalance.status === "arrears" ? "systemRed" : "label"} lineLimit={1} minScaleFactor={0.65}>
+                              {isPrivacy ? "****" : data.financialBalance.availableCashAmount}
+                            </Text>
+                          </HStack>
+                          <HStack spacing={4} alignment="center">
+                            <Circle
+                              fill={
+                                data.financialBalance.status === "sufficient"
+                                  ? "systemGreen"
+                                  : data.financialBalance.status === "low"
+                                    ? "systemOrange"
+                                    : "systemRed"
+                              }
+                              frame={{ width: 6, height: 6 }}
+                            />
+                            <Text
+                              font={11}
+                              foregroundStyle={
+                                data.financialBalance.status === "sufficient"
+                                  ? "systemGreen"
+                                  : data.financialBalance.status === "low"
+                                    ? "systemOrange"
+                                    : "systemRed"
+                              }
+                            >
+                              {data.financialBalance.status === "sufficient"
+                                ? "资金充足"
+                                : data.financialBalance.status === "low"
+                                  ? "余额偏低"
+                                  : "已欠费"}
+                            </Text>
+                          </HStack>
+                        </>
+                      ) : (
+                        <>
+                          <Text font={22} bold foregroundStyle="secondaryLabel">
+                            不可用
+                          </Text>
+                          <Text font={11} foregroundStyle="systemOrange">
+                            余额查询不可用
+                          </Text>
+                        </>
+                      )}
+                    </VStack>
+                  </Button>
+                  <Divider frame={{ height: 44 }} />
 
                   {/* 当月账单查询结果 */}
-                  <VStack alignment="leading" spacing={4} padding={{ leading: data.financialBalance ? 16 : 0 }} frame={{ maxWidth: Infinity }}>
+                  <VStack alignment="leading" spacing={4} padding={{ leading: 16 }} frame={{ maxWidth: Infinity }}>
                     <Text font={12} foregroundStyle="secondaryLabel">
                       {financialBillPresentation.label}
                     </Text>
                     <HStack alignment="lastTextBaseline" spacing={3}>
-                      {data.financialBillStatus === "available" && (
+                      {data.financialBillStatus === "available" && data.financialBill && (
                         <Text font={14} bold foregroundStyle="label">
-                          {data.financialBill?.currency === "USD" ? "$" : "¥"}
+                          {currencySymbol(data.financialBill.currency)}
                         </Text>
                       )}
                       <Text font={22} bold foregroundStyle="label">
                         {data.financialBillStatus === "unavailable"
                           ? "不可用"
-                          : isPrivacy
-                            ? "****"
-                            : data.financialBill?.paymentAmount || "0.00"}
+                          : !data.financialBill
+                            ? "暂无记录"
+                            : isPrivacy
+                              ? "****"
+                              : data.financialBill.paymentAmount}
                       </Text>
                     </HStack>
                     <Text
@@ -2318,6 +2631,8 @@ function ConsoleView() {
                       foregroundStyle={
                         data.financialBillStatus === "unavailable"
                           ? "systemOrange"
+                          : !data.financialBill
+                            ? "secondaryLabel"
                           : data.financialBill && parseFloat(data.financialBill.paymentAmount) > 0
                             ? "systemOrange"
                             : "systemGreen"
@@ -2325,9 +2640,36 @@ function ConsoleView() {
                     >
                       {data.financialBillStatus === "unavailable"
                         ? "账单查询不可用"
-                        : financialBillPresentation.detail}
+                        : !data.financialBill
+                          ? "本月暂无可展示账单记录"
+                          : financialBillPresentation.detail}
                     </Text>
                   </VStack>
+                </HStack>
+
+                <Divider padding={{ horizontal: 16 }} />
+
+                <HStack padding={{ horizontal: 16, vertical: 13 }} alignment="center" spacing={12}>
+                  <Image systemName="calendar" font={16} foregroundStyle="secondaryLabel" frame={{ width: 28, height: 28 }} />
+                  <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                    <Text font="subheadline" foregroundStyle="label">上月已出账费用</Text>
+                    <Text font="caption2" foregroundStyle="secondaryLabel">
+                      {data.previousFinancialBill?.billingCycle || "上一账期"} · {data.previousFinancialBillStatus === "available"
+                        ? data.previousFinancialBill
+                          ? "账号全部产品账单 · 出账可能延迟"
+                          : "接口可用但暂无账单明细"
+                        : "账单查询不可用"}
+                    </Text>
+                  </VStack>
+                  <Text font={19} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle="label">
+                    {data.previousFinancialBillStatus === "available" && data.previousFinancialBill
+                      ? isPrivacy
+                        ? "****"
+                        : `${currencySymbol(data.previousFinancialBill.currency)}${data.previousFinancialBill.paymentAmount}`
+                        : data.previousFinancialBillStatus === "available"
+                          ? "暂无记录"
+                          : "不可用"}
+                  </Text>
                 </HStack>
 
                 <Divider padding={{ horizontal: 16 }} />
@@ -2358,7 +2700,13 @@ function ConsoleView() {
                           <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
                         </HStack>
                         <Text font={14} bold foregroundStyle="label">
-                          {data.financialBillStatus === "unavailable" ? "—" : isPrivacy ? "****" : `¥${data?.financialBill?.ecsAmount || "0.00"}`}
+                          {data.financialBillStatus === "unavailable"
+                            ? "—"
+                            : !data.financialBill
+                              ? "暂无"
+                              : isPrivacy
+                                ? "****"
+                                : `${currencySymbol(data.financialBill.currency)}${data.financialBill.ecsAmount}`}
                         </Text>
                       </VStack>
                     </HStack>
@@ -2388,7 +2736,13 @@ function ConsoleView() {
                           <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
                         </HStack>
                         <Text font={14} bold foregroundStyle="label">
-                          {data.financialBillStatus === "unavailable" ? "—" : isPrivacy ? "****" : `¥${data?.financialBill?.eipAmount || "0.00"}`}
+                          {data.financialBillStatus === "unavailable"
+                            ? "—"
+                            : !data.financialBill
+                              ? "暂无"
+                              : isPrivacy
+                                ? "****"
+                                : `${currencySymbol(data.financialBill.currency)}${data.financialBill.eipAmount}`}
                         </Text>
                       </VStack>
                     </HStack>
@@ -2396,7 +2750,7 @@ function ConsoleView() {
                 </HStack>
               </VStack>
               <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-                轻触 ECS 产品或公网网络卡片可查看最近每日账单分类；结果按账号汇总，非单实例或单 IP 费用。
+                可用余额是当前账户资金；轻触余额查看近期账期费用，轻触产品查看最近每日分类。账单不代表余额扣款流水。
               </Text>
             </>
           )}
