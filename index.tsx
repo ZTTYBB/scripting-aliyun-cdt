@@ -327,6 +327,87 @@ interface ConsoleData {
   financialBalance?: AccountBalanceInfo | null
   financialBill?: MonthlyBillInfo | null
   financialBillStatus: "available" | "unavailable"
+  trafficDiagnostics?: CDTTrafficDiagnostics
+}
+
+interface CDTTrafficDetail {
+  Traffic?: number | string
+  Product?: string
+  BusinessRegionId?: string
+  ISPType?: string
+  ProductTrafficDetails?: unknown
+  TrafficTierDetails?: unknown
+}
+
+type CDTTrafficBucket = "mainland" | "nonMainland" | "unknown"
+
+interface CDTTrafficGroup {
+  bucket: CDTTrafficBucket
+  businessRegionId?: string
+  ispType?: string
+  totalBytes: number
+  totalGB: number
+  itemCount: number
+}
+
+interface CDTTrafficBucketSummary {
+  bucket: CDTTrafficBucket
+  totalBytes: number
+  totalGB: number
+  itemCount: number
+}
+
+interface CDTTrafficDiagnostics {
+  buckets: Record<CDTTrafficBucket, CDTTrafficBucketSummary>
+  groups: CDTTrafficGroup[]
+}
+
+function trafficBytes(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+}
+
+function diagnosticField(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+function buildCDTTrafficDiagnostics(details: CDTTrafficDetail[]): CDTTrafficDiagnostics {
+  const buckets: Record<CDTTrafficBucket, CDTTrafficBucketSummary> = {
+    mainland: { bucket: "mainland", totalBytes: 0, totalGB: 0, itemCount: 0 },
+    nonMainland: { bucket: "nonMainland", totalBytes: 0, totalGB: 0, itemCount: 0 },
+    unknown: { bucket: "unknown", totalBytes: 0, totalGB: 0, itemCount: 0 }
+  }
+  const grouped = new Map<string, CDTTrafficGroup>()
+
+  for (const detail of details) {
+    const totalBytes = trafficBytes(detail?.Traffic)
+    const businessRegionId = diagnosticField(detail?.BusinessRegionId)
+    const ispType = diagnosticField(detail?.ISPType)
+    // Phase 1 deliberately keeps every row unknown until the API mapping is verified.
+    const bucket: CDTTrafficBucket = "unknown"
+    const summary = buckets[bucket]
+    summary.totalBytes += totalBytes
+    summary.itemCount += 1
+    const key = `${bucket}\u0000${businessRegionId || ""}\u0000${ispType || ""}`
+    const existing = grouped.get(key)
+    if (existing) {
+      existing.totalBytes += totalBytes
+      existing.itemCount += 1
+    } else {
+      grouped.set(key, { bucket, businessRegionId, ispType, totalBytes, totalGB: 0, itemCount: 1 })
+    }
+  }
+
+  for (const summary of Object.values(buckets)) {
+    summary.totalGB = Number((summary.totalBytes / 1024 ** 3).toFixed(2))
+  }
+  const groups = Array.from(grouped.values()).map(group => ({
+    ...group,
+    totalGB: Number((group.totalBytes / 1024 ** 3).toFixed(2))
+  }))
+  return { buckets, groups }
 }
 
 const SNAPSHOT_STORAGE_KEY = "aliyun_cdt_dashboard_cache"
@@ -370,11 +451,12 @@ function getInstancePublicIp(instance?: ECSInstanceRecord): string | undefined {
 async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   // 1. 查询 CDT 流量
   const cdtData = await aliyunRequest<{
-    TrafficDetails?: Array<{ Traffic?: number }>
+    TrafficDetails?: CDTTrafficDetail[]
   }>("cdt.aliyuncs.com", "ListCdtInternetTraffic", "2021-08-13", config)
 
   const details = cdtData.TrafficDetails || []
-  const totalBytes = details.reduce((sum, item) => sum + (item.Traffic || 0), 0)
+  const trafficDiagnostics = buildCDTTrafficDiagnostics(details)
+  const totalBytes = details.reduce((sum, item) => sum + trafficBytes(item.Traffic), 0)
   const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
   const thresholdGB = config.trafficThresholdGB
   const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
@@ -683,7 +765,8 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
     updatedAt: now.toISOString(),
     financialBalance,
     financialBill,
-    financialBillStatus
+    financialBillStatus,
+    trafficDiagnostics
   }
 }
 
@@ -2255,6 +2338,53 @@ function ConsoleView() {
               VPS 独立负责实例保活与熔断，手机只读展示。流量余量和进度按本地月用量参考值计算，不代表阿里云账号维度的完整免费额度余额。
             </Text>
           </HStack>
+
+          {data?.trafficDiagnostics && (
+            <>
+              <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
+                <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
+                  CDT 地域明细诊断
+                </Text>
+                <Spacer />
+                <Text font={11} foregroundStyle="secondaryLabel">
+                  只读 · 未映射
+                </Text>
+              </HStack>
+              <VStack
+                background="systemBackground"
+                clipShape={{ type: "rect", cornerRadius: 16, style: "continuous" }}
+                spacing={0}
+                frame={{ maxWidth: Infinity, alignment: "leading" }}
+              >
+                {(["mainland", "nonMainland", "unknown"] as CDTTrafficBucket[]).map(bucket => {
+                  const summary = data.trafficDiagnostics!.buckets[bucket]
+                  const label = bucket === "mainland" ? "内地（待映射）" : bucket === "nonMainland" ? "非内地（待映射）" : "未识别"
+                  return (
+                    <HStack key={bucket} padding={{ horizontal: 16, vertical: 10 }} alignment="center">
+                      <Text font={12} foregroundStyle="secondaryLabel">{label}</Text>
+                      <Spacer />
+                      <Text font={12} bold foregroundStyle="label">
+                        {summary.totalGB.toFixed(2)} GB · {summary.itemCount} 条
+                      </Text>
+                    </HStack>
+                  )
+                })}
+                {data.trafficDiagnostics.groups.slice(0, 6).map((group, index) => (
+                  <VStack key={`${group.bucket}-${group.businessRegionId || "none"}-${group.ispType || "none"}-${index}`} alignment="leading" spacing={2} padding={{ horizontal: 16, vertical: 8 }}>
+                    <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>
+                      BusinessRegionId: {group.businessRegionId || "未返回"} · ISPType: {group.ispType || "未返回"}
+                    </Text>
+                    <Text font={12} bold foregroundStyle="label">
+                      未识别分组 · {group.totalGB.toFixed(2)} GB
+                    </Text>
+                  </VStack>
+                ))}
+              </VStack>
+              <Text font={11} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
+                当前阶段只展示接口原始地域/运营商字段；未核实映射前不会把流量计入国内 20 GB 或非内地 200 GB。
+              </Text>
+            </>
+          )}
 
           {/* Section 3: 控制台实时操作日志 */}
           <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">

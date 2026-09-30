@@ -327,10 +327,89 @@ interface MonitorData {
   financialBalance?: AccountBalanceInfo | null
   financialBill?: MonthlyBillInfo | null
   financialBillStatus: "available" | "unavailable"
+  trafficDiagnostics?: CDTTrafficDiagnostics
 }
 
 const SNAPSHOT_STORAGE_KEY = "aliyun_cdt_dashboard_cache"
 const PRIVACY_STORAGE_KEY = "aliyun_cdt_privacy_mode"
+
+interface CDTTrafficDetail {
+  Traffic?: number | string
+  Product?: string
+  BusinessRegionId?: string
+  ISPType?: string
+  ProductTrafficDetails?: unknown
+  TrafficTierDetails?: unknown
+}
+
+type CDTTrafficBucket = "mainland" | "nonMainland" | "unknown"
+
+interface CDTTrafficGroup {
+  bucket: CDTTrafficBucket
+  businessRegionId?: string
+  ispType?: string
+  totalBytes: number
+  totalGB: number
+  itemCount: number
+}
+
+interface CDTTrafficBucketSummary {
+  bucket: CDTTrafficBucket
+  totalBytes: number
+  totalGB: number
+  itemCount: number
+}
+
+interface CDTTrafficDiagnostics {
+  buckets: Record<CDTTrafficBucket, CDTTrafficBucketSummary>
+  groups: CDTTrafficGroup[]
+}
+
+function trafficBytes(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+}
+
+function diagnosticField(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+function buildCDTTrafficDiagnostics(details: CDTTrafficDetail[]): CDTTrafficDiagnostics {
+  const buckets: Record<CDTTrafficBucket, CDTTrafficBucketSummary> = {
+    mainland: { bucket: "mainland", totalBytes: 0, totalGB: 0, itemCount: 0 },
+    nonMainland: { bucket: "nonMainland", totalBytes: 0, totalGB: 0, itemCount: 0 },
+    unknown: { bucket: "unknown", totalBytes: 0, totalGB: 0, itemCount: 0 }
+  }
+  const grouped = new Map<string, CDTTrafficGroup>()
+  for (const detail of details) {
+    const totalBytes = trafficBytes(detail?.Traffic)
+    const businessRegionId = diagnosticField(detail?.BusinessRegionId)
+    const ispType = diagnosticField(detail?.ISPType)
+    // Phase 1 keeps every row unknown until the provider's region mapping is verified.
+    const bucket: CDTTrafficBucket = "unknown"
+    const summary = buckets[bucket]
+    summary.totalBytes += totalBytes
+    summary.itemCount += 1
+    const key = `${bucket}\u0000${businessRegionId || ""}\u0000${ispType || ""}`
+    const existing = grouped.get(key)
+    if (existing) {
+      existing.totalBytes += totalBytes
+      existing.itemCount += 1
+    } else {
+      grouped.set(key, { bucket, businessRegionId, ispType, totalBytes, totalGB: 0, itemCount: 1 })
+    }
+  }
+  for (const summary of Object.values(buckets)) {
+    summary.totalGB = Number((summary.totalBytes / 1024 ** 3).toFixed(2))
+  }
+  const groups = Array.from(grouped.values()).map(group => ({
+    ...group,
+    totalGB: Number((group.totalBytes / 1024 ** 3).toFixed(2))
+  }))
+  return { buckets, groups }
+}
 
 type ECSIpValue = string | string[] | undefined
 
@@ -369,11 +448,12 @@ function getInstancePublicIp(instance?: ECSInstanceRecord): string | undefined {
 
 async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
   const cdtData = await aliyunRequest<{
-    TrafficDetails?: Array<{ Traffic?: number }>
+    TrafficDetails?: CDTTrafficDetail[]
   }>("cdt.aliyuncs.com", "ListCdtInternetTraffic", "2021-08-13", config)
 
   const details = cdtData.TrafficDetails || []
-  const totalBytes = details.reduce((sum, item) => sum + (item.Traffic || 0), 0)
+  const trafficDiagnostics = buildCDTTrafficDiagnostics(details)
+  const totalBytes = details.reduce((sum, item) => sum + trafficBytes(item.Traffic), 0)
   const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
   const thresholdGB = config.trafficThresholdGB
   const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
@@ -693,7 +773,8 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
     color,
     financialBalance,
     financialBill,
-    financialBillStatus
+    financialBillStatus,
+    trafficDiagnostics
   }
 }
 
@@ -2834,6 +2915,44 @@ function AppDashboard() {
                   本月时间已过 {monthTimeProgress.toFixed(0)}% · 流量消耗 {data.percentage.toFixed(1)}%（{healthMeta.label}）
                 </Text>
               </HStack>
+            )}
+
+            {data?.trafficDiagnostics && (
+              <VStack
+                alignment="leading"
+                spacing={5}
+                padding={{ horizontal: 16, bottom: 12 }}
+              >
+                <HStack alignment="center">
+                  <Text font={11} bold foregroundStyle="secondaryLabel">
+                    地域明细诊断
+                  </Text>
+                  <Spacer />
+                  <Text font={10} foregroundStyle="secondaryLabel">
+                    只读 · 未映射
+                  </Text>
+                </HStack>
+                <HStack alignment="center">
+                  <Text font={11} foregroundStyle="secondaryLabel">
+                    内地 / 非内地
+                  </Text>
+                  <Spacer />
+                  <Text font={11} bold foregroundStyle="secondaryLabel">
+                    待确认
+                  </Text>
+                </HStack>
+                {data.trafficDiagnostics.groups.slice(0, 4).map((group, index) => (
+                  <HStack key={`${group.businessRegionId || "none"}-${group.ispType || "none"}-${index}`} alignment="center">
+                    <Text font={10} foregroundStyle="secondaryLabel" lineLimit={1}>
+                      {group.businessRegionId || "BusinessRegionId 未返回"} · {group.ispType || "ISPType 未返回"}
+                    </Text>
+                    <Spacer />
+                    <Text font={10} monospacedDigit foregroundStyle="secondaryLabel">
+                      {group.totalGB.toFixed(2)} GB
+                    </Text>
+                  </HStack>
+                ))}
+              </VStack>
             )}
 
             <Divider padding={{ horizontal: 16 }} />

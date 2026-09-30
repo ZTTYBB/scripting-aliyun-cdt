@@ -203,6 +203,110 @@ export interface CDTTrafficResult {
   percentage: number
   statusLevel: "normal" | "warning" | "danger"
   updatedAt: Date
+  trafficDiagnostics?: CDTTrafficDiagnostics
+}
+
+/**
+ * Raw rows returned by ListCdtInternetTraffic.
+ *
+ * The two nested detail fields are intentionally kept as unknown: Alibaba's
+ * response shape varies by API revision and account, but diagnostics must not
+ * discard them or print credentials while we verify the actual payload.
+ */
+export interface CDTTrafficDetail {
+  Traffic?: number | string
+  Product?: string
+  BusinessRegionId?: string
+  ISPType?: string
+  ProductTrafficDetails?: unknown
+  TrafficTierDetails?: unknown
+}
+
+export type CDTTrafficBucket = "mainland" | "nonMainland" | "unknown"
+
+export interface CDTTrafficGroup {
+  bucket: CDTTrafficBucket
+  businessRegionId?: string
+  ispType?: string
+  totalBytes: number
+  totalGB: number
+  itemCount: number
+}
+
+export interface CDTTrafficBucketSummary {
+  bucket: CDTTrafficBucket
+  totalBytes: number
+  totalGB: number
+  itemCount: number
+}
+
+export interface CDTTrafficDiagnostics {
+  buckets: Record<CDTTrafficBucket, CDTTrafficBucketSummary>
+  groups: CDTTrafficGroup[]
+}
+
+function trafficBytes(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+}
+
+function diagnosticField(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+/**
+ * Build display-only diagnostics without guessing region semantics.
+ *
+ * BusinessRegionId values must be confirmed against Alibaba's documented
+ * response before assigning mainland/nonMainland. Keeping every row unknown
+ * makes the missing mapping visible and prevents false quota calculations.
+ */
+export function buildCDTTrafficDiagnostics(details: CDTTrafficDetail[]): CDTTrafficDiagnostics {
+  const buckets: Record<CDTTrafficBucket, CDTTrafficBucketSummary> = {
+    mainland: { bucket: "mainland", totalBytes: 0, totalGB: 0, itemCount: 0 },
+    nonMainland: { bucket: "nonMainland", totalBytes: 0, totalGB: 0, itemCount: 0 },
+    unknown: { bucket: "unknown", totalBytes: 0, totalGB: 0, itemCount: 0 }
+  }
+  const grouped = new Map<string, CDTTrafficGroup>()
+
+  for (const detail of details) {
+    const totalBytes = trafficBytes(detail?.Traffic)
+    const businessRegionId = diagnosticField(detail?.BusinessRegionId)
+    const ispType = diagnosticField(detail?.ISPType)
+    // No unverified prefix/region mapping is allowed in phase 1.
+    const bucket: CDTTrafficBucket = "unknown"
+    const summary = buckets[bucket]
+    summary.totalBytes += totalBytes
+    summary.itemCount += 1
+
+    const key = `${bucket}\u0000${businessRegionId || ""}\u0000${ispType || ""}`
+    const existing = grouped.get(key)
+    if (existing) {
+      existing.totalBytes += totalBytes
+      existing.itemCount += 1
+    } else {
+      grouped.set(key, {
+        bucket,
+        businessRegionId,
+        ispType,
+        totalBytes,
+        totalGB: 0,
+        itemCount: 1
+      })
+    }
+  }
+
+  for (const summary of Object.values(buckets)) {
+    summary.totalGB = Number((summary.totalBytes / 1024 ** 3).toFixed(2))
+  }
+  const groups = Array.from(grouped.values()).map(group => ({
+    ...group,
+    totalGB: Number((group.totalBytes / 1024 ** 3).toFixed(2))
+  }))
+
+  return { buckets, groups }
 }
 
 export type ECSStatus = "Running" | "Stopped" | "Starting" | "Stopping" | "Unknown"
@@ -291,7 +395,7 @@ export class AliyunService {
    */
   async getCDTTraffic(): Promise<CDTTrafficResult> {
     const data = await aliyunRequest<{
-      TrafficDetails?: Array<{ Traffic?: number; Product?: string }>
+      TrafficDetails?: CDTTrafficDetail[]
     }>(
       {
         domain: "cdt.aliyuncs.com",
@@ -303,7 +407,8 @@ export class AliyunService {
     )
 
     const details = data.TrafficDetails || []
-    const totalBytes = details.reduce((sum, item) => sum + (item.Traffic || 0), 0)
+    const trafficDiagnostics = buildCDTTrafficDiagnostics(details)
+    const totalBytes = details.reduce((sum, item) => sum + trafficBytes(item.Traffic), 0)
     const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
     const thresholdGB = this.config.trafficThresholdGB
     const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
@@ -324,7 +429,8 @@ export class AliyunService {
       remainingGB,
       percentage,
       statusLevel,
-      updatedAt: new Date()
+      updatedAt: new Date(),
+      trafficDiagnostics
     }
   }
 
