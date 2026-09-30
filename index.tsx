@@ -373,6 +373,39 @@ function diagnosticField(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined
 }
 
+// Keep this an explicit allowlist. A `cn-*` prefix is insufficient because
+// `cn-hongkong` is non-mainland for CDT quota accounting.
+const CDT_MAINLAND_BUSINESS_REGION_IDS = new Set([
+  "cn-beijing",
+  "cn-changsha",
+  "cn-chengdu",
+  "cn-dalian",
+  "cn-fuzhou",
+  "cn-guangzhou",
+  "cn-hangzhou",
+  "cn-heyuan",
+  "cn-huhehaote",
+  "cn-jinan",
+  "cn-nanjing",
+  "cn-qingdao",
+  "cn-shanghai",
+  "cn-shenzhen",
+  "cn-wuhan",
+  "cn-wulanchabu",
+  "cn-xian",
+  "cn-zhangjiakou",
+  "cn-zhengzhou"
+])
+const CDT_NON_MAINLAND_BUSINESS_REGION_IDS = new Set(["cn-hongkong"])
+
+function classifyCDTTrafficBucket(value: unknown): CDTTrafficBucket {
+  const normalized = diagnosticField(value)?.toLowerCase()
+  if (!normalized) return "unknown"
+  if (CDT_MAINLAND_BUSINESS_REGION_IDS.has(normalized)) return "mainland"
+  if (CDT_NON_MAINLAND_BUSINESS_REGION_IDS.has(normalized)) return "nonMainland"
+  return "unknown"
+}
+
 function buildCDTTrafficDiagnostics(details: CDTTrafficDetail[]): CDTTrafficDiagnostics {
   const buckets: Record<CDTTrafficBucket, CDTTrafficBucketSummary> = {
     mainland: { bucket: "mainland", totalBytes: 0, totalGB: 0, itemCount: 0 },
@@ -385,8 +418,7 @@ function buildCDTTrafficDiagnostics(details: CDTTrafficDetail[]): CDTTrafficDiag
     const totalBytes = trafficBytes(detail?.Traffic)
     const businessRegionId = diagnosticField(detail?.BusinessRegionId)
     const ispType = diagnosticField(detail?.ISPType)
-    // Phase 1 deliberately keeps every row unknown until the API mapping is verified.
-    const bucket: CDTTrafficBucket = "unknown"
+    const bucket = classifyCDTTrafficBucket(businessRegionId)
     const summary = buckets[bucket]
     summary.totalBytes += totalBytes
     summary.itemCount += 1
@@ -2358,13 +2390,19 @@ function ConsoleView() {
               >
                 {(["mainland", "nonMainland", "unknown"] as CDTTrafficBucket[]).map(bucket => {
                   const summary = data.trafficDiagnostics!.buckets[bucket]
-                  const label = bucket === "mainland" ? "内地（待映射）" : bucket === "nonMainland" ? "非内地（待映射）" : "未识别"
+                  const label = bucket === "mainland"
+                    ? "内地 · 20 GB参考线"
+                    : bucket === "nonMainland"
+                      ? "非内地 · 200 GB参考线"
+                      : "未识别 · 不套额度"
                   return (
                     <HStack key={bucket} padding={{ horizontal: 16, vertical: 10 }} alignment="center">
                       <Text font={12} foregroundStyle="secondaryLabel">{label}</Text>
                       <Spacer />
                       <Text font={12} bold foregroundStyle="label">
-                        {summary.totalGB.toFixed(2)} GB · {summary.itemCount} 条
+                        {summary.totalGB.toFixed(2)} GB
+                        {bucket !== "unknown" ? ` / ${bucket === "mainland" ? 20 : 200} GB` : ""}
+                        {" · "}{summary.itemCount} 条
                       </Text>
                     </HStack>
                   )
@@ -2375,13 +2413,17 @@ function ConsoleView() {
                       BusinessRegionId: {group.businessRegionId || "未返回"} · ISPType: {group.ispType || "未返回"}
                     </Text>
                     <Text font={12} bold foregroundStyle="label">
-                      未识别分组 · {group.totalGB.toFixed(2)} GB
+                      {group.bucket === "mainland"
+                        ? "内地分组"
+                        : group.bucket === "nonMainland"
+                          ? "非内地分组"
+                          : "未识别分组"} · {group.totalGB.toFixed(2)} GB
                     </Text>
                   </VStack>
                 ))}
               </VStack>
               <Text font={11} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-                当前阶段只展示接口原始地域/运营商字段；未核实映射前不会把流量计入国内 20 GB 或非内地 200 GB。
+                已按明确的 BusinessRegionId 映射；未知值保留为未识别，不计入内地 20 GB 或非内地 200 GB。
               </Text>
             </>
           )}

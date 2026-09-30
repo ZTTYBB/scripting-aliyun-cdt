@@ -400,118 +400,6 @@ interface WidgetData {
   ecsStatus: "Running" | "Stopped" | "Starting" | "Stopping" | "Unknown"
   publicIp?: string
   color: string
-  trafficDiagnostics?: CDTTrafficDiagnostics
-}
-
-interface CDTTrafficDetail {
-  Traffic?: number | string
-  Product?: string
-  BusinessRegionId?: string
-  ISPType?: string
-  ProductTrafficDetails?: unknown
-  TrafficTierDetails?: unknown
-}
-
-type CDTTrafficBucket = "mainland" | "nonMainland" | "unknown"
-
-interface CDTTrafficGroup {
-  bucket: CDTTrafficBucket
-  businessRegionId?: string
-  ispType?: string
-  totalBytes: number
-  totalGB: number
-  itemCount: number
-}
-
-interface CDTTrafficBucketSummary {
-  bucket: CDTTrafficBucket
-  totalBytes: number
-  totalGB: number
-  itemCount: number
-}
-
-interface CDTTrafficDiagnostics {
-  buckets: Record<CDTTrafficBucket, CDTTrafficBucketSummary>
-  groups: CDTTrafficGroup[]
-}
-
-function trafficBytes(value: unknown): number {
-  const parsed = typeof value === "number" ? value : Number(value)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
-}
-
-function diagnosticField(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : undefined
-}
-
-function buildCDTTrafficDiagnostics(details: CDTTrafficDetail[]): CDTTrafficDiagnostics {
-  const buckets: Record<CDTTrafficBucket, CDTTrafficBucketSummary> = {
-    mainland: { bucket: "mainland", totalBytes: 0, totalGB: 0, itemCount: 0 },
-    nonMainland: { bucket: "nonMainland", totalBytes: 0, totalGB: 0, itemCount: 0 },
-    unknown: { bucket: "unknown", totalBytes: 0, totalGB: 0, itemCount: 0 }
-  }
-  const grouped = new Map<string, CDTTrafficGroup>()
-  for (const detail of details) {
-    const totalBytes = trafficBytes(detail?.Traffic)
-    const businessRegionId = diagnosticField(detail?.BusinessRegionId)
-    const ispType = diagnosticField(detail?.ISPType)
-    const bucket: CDTTrafficBucket = "unknown"
-    const summary = buckets[bucket]
-    summary.totalBytes += totalBytes
-    summary.itemCount += 1
-    const key = `${bucket}\u0000${businessRegionId || ""}\u0000${ispType || ""}`
-    const existing = grouped.get(key)
-    if (existing) {
-      existing.totalBytes += totalBytes
-      existing.itemCount += 1
-    } else {
-      grouped.set(key, { bucket, businessRegionId, ispType, totalBytes, totalGB: 0, itemCount: 1 })
-    }
-  }
-  for (const summary of Object.values(buckets)) {
-    summary.totalGB = Number((summary.totalBytes / 1024 ** 3).toFixed(2))
-  }
-  const groups = Array.from(grouped.values()).map(group => ({
-    ...group,
-    totalGB: Number((group.totalBytes / 1024 ** 3).toFixed(2))
-  }))
-  return { buckets, groups }
-}
-
-function normalizeTrafficDiagnostics(value: unknown): CDTTrafficDiagnostics | undefined {
-  if (!isRecord(value) || !isRecord(value.buckets) || !Array.isArray(value.groups)) return undefined
-  const buckets = value.buckets as Record<string, unknown>
-  const normalizedBuckets = {} as Record<CDTTrafficBucket, CDTTrafficBucketSummary>
-  for (const bucket of ["mainland", "nonMainland", "unknown"] as CDTTrafficBucket[]) {
-    const summary = buckets[bucket]
-    if (!isRecord(summary) || !isFiniteNumber(summary.totalGB) || !isFiniteNumber(summary.totalBytes) || !isFiniteNumber(summary.itemCount)) {
-      return undefined
-    }
-    normalizedBuckets[bucket] = {
-      bucket,
-      totalBytes: Math.max(0, summary.totalBytes),
-      totalGB: Math.max(0, summary.totalGB),
-      itemCount: Math.max(0, Math.round(summary.itemCount))
-    }
-  }
-  const groups: CDTTrafficGroup[] = value.groups.slice(0, 50).reduce<CDTTrafficGroup[]>((result, group) => {
-    if (!isRecord(group) || !isFiniteNumber(group.totalGB) || !isFiniteNumber(group.totalBytes) || !isFiniteNumber(group.itemCount)) return result
-    const bucket = group.bucket === "mainland" || group.bucket === "nonMainland" || group.bucket === "unknown"
-      ? group.bucket
-      : "unknown"
-    result.push({
-      bucket,
-      businessRegionId: diagnosticField(group.businessRegionId),
-      ispType: diagnosticField(group.ispType),
-      totalBytes: Math.max(0, group.totalBytes),
-      totalGB: Math.max(0, group.totalGB),
-      itemCount: Math.max(0, Math.round(group.itemCount))
-    })
-    return result
-  }, [])
-  return { buckets: normalizedBuckets, groups }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -611,20 +499,18 @@ function adaptDashboardSnapshotForWidget(raw: unknown): WidgetData | null {
     updatedAt,
     ecsStatus: normalizeEcsStatus(raw.ecsStatus),
     publicIp,
-    color,
-    trafficDiagnostics: normalizeTrafficDiagnostics(raw.trafficDiagnostics)
+    color
   }
 }
 
 async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
   // 1. 查询 CDT 流量
   const cdtData = await aliyunRequest<{
-    TrafficDetails?: CDTTrafficDetail[]
+    TrafficDetails?: Array<{ Traffic?: number }>
   }>("cdt.aliyuncs.com", "ListCdtInternetTraffic", "2021-08-13", config)
 
   const details = cdtData.TrafficDetails || []
-  const trafficDiagnostics = buildCDTTrafficDiagnostics(details)
-  const totalBytes = details.reduce((sum, item) => sum + trafficBytes(item.Traffic), 0)
+  const totalBytes = details.reduce((sum, item) => sum + (item.Traffic || 0), 0)
   const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
   const thresholdGB = config.trafficThresholdGB
   const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || 195
@@ -688,8 +574,7 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
     updatedAt: now,
     ecsStatus,
     publicIp,
-    color,
-    trafficDiagnostics
+    color
   }
 }
 
@@ -1137,12 +1022,6 @@ function LargeWidgetView({ data }: { data: WidgetData }) {
         <Spacer />
         <Text font={9} bold lineLimit={1} foregroundStyle="secondaryLabel">单位 GB</Text>
       </HStack>
-
-      {data.trafficDiagnostics && (
-        <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">
-          地域诊断: 未识别 {data.trafficDiagnostics.buckets.unknown.totalGB.toFixed(2)} GB
-        </Text>
-      )}
 
       <DailyBars
         data={data}

@@ -245,6 +245,40 @@ export interface CDTTrafficDiagnostics {
   groups: CDTTrafficGroup[]
 }
 
+/**
+ * Explicit mapping for the BusinessRegionId values used by CDT.
+ *
+ * Do not replace this with a `cn-*` prefix check: Hong Kong is represented
+ * by `cn-hongkong` but is not mainland China for the quota buckets.
+ */
+export const CDT_MAINLAND_BUSINESS_REGION_IDS = [
+  "cn-beijing",
+  "cn-changsha",
+  "cn-chengdu",
+  "cn-dalian",
+  "cn-fuzhou",
+  "cn-guangzhou",
+  "cn-hangzhou",
+  "cn-heyuan",
+  "cn-huhehaote",
+  "cn-jinan",
+  "cn-nanjing",
+  "cn-qingdao",
+  "cn-shanghai",
+  "cn-shenzhen",
+  "cn-wuhan",
+  "cn-wulanchabu",
+  "cn-xian",
+  "cn-zhangjiakou",
+  "cn-zhengzhou"
+] as const
+
+/** Confirmed from the account's returned `BusinessRegionId` in phase 1. */
+export const CDT_NON_MAINLAND_BUSINESS_REGION_IDS = ["cn-hongkong"] as const
+
+const mainlandBusinessRegionIds = new Set<string>(CDT_MAINLAND_BUSINESS_REGION_IDS)
+const nonMainlandBusinessRegionIds = new Set<string>(CDT_NON_MAINLAND_BUSINESS_REGION_IDS)
+
 function trafficBytes(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value)
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
@@ -257,12 +291,17 @@ function diagnosticField(value: unknown): string | undefined {
 }
 
 /**
- * Build display-only diagnostics without guessing region semantics.
- *
- * BusinessRegionId values must be confirmed against Alibaba's documented
- * response before assigning mainland/nonMainland. Keeping every row unknown
- * makes the missing mapping visible and prevents false quota calculations.
+ * Map only explicitly verified BusinessRegionId values.
+ * Unknown provider values remain unknown rather than being inferred by prefix.
  */
+export function classifyCDTTrafficBucket(value: unknown): CDTTrafficBucket {
+  const normalized = diagnosticField(value)?.toLowerCase()
+  if (!normalized) return "unknown"
+  if (mainlandBusinessRegionIds.has(normalized)) return "mainland"
+  if (nonMainlandBusinessRegionIds.has(normalized)) return "nonMainland"
+  return "unknown"
+}
+
 export function buildCDTTrafficDiagnostics(details: CDTTrafficDetail[]): CDTTrafficDiagnostics {
   const buckets: Record<CDTTrafficBucket, CDTTrafficBucketSummary> = {
     mainland: { bucket: "mainland", totalBytes: 0, totalGB: 0, itemCount: 0 },
@@ -275,8 +314,7 @@ export function buildCDTTrafficDiagnostics(details: CDTTrafficDetail[]): CDTTraf
     const totalBytes = trafficBytes(detail?.Traffic)
     const businessRegionId = diagnosticField(detail?.BusinessRegionId)
     const ispType = diagnosticField(detail?.ISPType)
-    // No unverified prefix/region mapping is allowed in phase 1.
-    const bucket: CDTTrafficBucket = "unknown"
+    const bucket = classifyCDTTrafficBucket(businessRegionId)
     const summary = buckets[bucket]
     summary.totalBytes += totalBytes
     summary.itemCount += 1
