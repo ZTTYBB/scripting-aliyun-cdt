@@ -897,6 +897,36 @@ function liquidGlass(interactive: boolean = true) {
   return {}
 }
 
+function dashboardSurface(cornerRadius: number = 18) {
+  return {
+    background: "systemBackground",
+    clipShape: { type: "rect" as const, cornerRadius, style: "continuous" as const },
+    shadow: { color: "rgba(0, 0, 0, 0.055)", radius: 16, x: 0, y: 5 }
+  }
+}
+
+function DashboardSectionHeader({
+  title,
+  detail
+}: {
+  title: string
+  detail?: string
+}) {
+  return (
+    <HStack padding={{ horizontal: 4, bottom: 2 }} alignment="center">
+      <Text font={15} fontWeight="semibold" foregroundStyle="label">
+        {title}
+      </Text>
+      <Spacer />
+      {detail ? (
+        <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>
+          {detail}
+        </Text>
+      ) : null}
+    </HStack>
+  )
+}
+
 // ==================== 5. 设置配置面板视图 (Apple Liquid Glass Controls) ====================
 
 function maskAccessKeyId(value: string): string {
@@ -1188,17 +1218,8 @@ function SettingsView({
         )}
 
         {/* Section 1: 快捷导入 */}
-        <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
-          <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
-            快捷导入
-          </Text>
-        </HStack>
-        <VStack
-          background="systemBackground"
-          clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
-          spacing={0}
-        >
+        <DashboardSectionHeader title="快捷导入" />
+        <VStack spacing={0} {...dashboardSurface()}>
           <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
               frame={{ width: 36, height: 36 }}
@@ -1236,17 +1257,8 @@ function SettingsView({
         </Text>
 
         {/* Section 2: 访问凭据 */}
-        <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
-          <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
-            阿里云访问凭据
-          </Text>
-        </HStack>
-        <VStack
-          background="systemBackground"
-          clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
-          spacing={0}
-        >
+        <DashboardSectionHeader title="阿里云访问凭据" />
+        <VStack spacing={0} {...dashboardSurface()}>
           {/* AccessKey ID */}
           <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
@@ -1306,17 +1318,8 @@ function SettingsView({
         </Text>
 
         {/* Section 3: 目标实例与地域 */}
-        <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
-          <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
-            目标 ECS 实例
-          </Text>
-        </HStack>
-        <VStack
-          background="systemBackground"
-          clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
-          spacing={0}
-        >
+        <DashboardSectionHeader title="目标 ECS 实例" />
+        <VStack spacing={0} {...dashboardSurface()}>
           {/* ECS 实例 ID */}
           <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
             <ZStack
@@ -1374,17 +1377,8 @@ function SettingsView({
         </Text>
 
         {/* Section 4: 只读流量参考值 */}
-        <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
-          <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
-            流量参考值
-          </Text>
-        </HStack>
-        <VStack
-          background="systemBackground"
-          clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-          shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
-          spacing={0}
-        >
+        <DashboardSectionHeader title="流量参考值" />
+        <VStack spacing={0} {...dashboardSurface()}>
           {/* 本地月用量参考值 */}
           <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
             <ZStack
@@ -1792,7 +1786,7 @@ function ConsoleView() {
           padding={{ horizontal: 16, top: 12, bottom: 20 }}
         >
           {/* 顶部标题与设置/刷新入口 */}
-          <HStack alignment="center" padding={{ horizontal: 4, bottom: 2 }}>
+          <HStack alignment="center" padding={{ horizontal: 4, bottom: 4 }}>
             <HStack spacing={8} alignment="center">
               <ZStack
                 frame={{ width: 34, height: 34 }}
@@ -1802,14 +1796,14 @@ function ConsoleView() {
                 <Image systemName="cloud.fill" font={16} foregroundStyle="systemBlue" />
               </ZStack>
               <VStack alignment="leading" spacing={1}>
-                <Text font="headline" bold foregroundStyle="label">
-                  阿里云 CDT 监控
+                <Text font="title2" bold foregroundStyle="label">
+                  阿里云 CDT
                 </Text>
                 <Text font={10} foregroundStyle="secondaryLabel">
                   {loading
                     ? "正在同步..."
                     : lastUpdated
-                      ? `${String(lastUpdated.getHours()).padStart(2, "0")}:${String(lastUpdated.getMinutes()).padStart(2, "0")} 已同步`
+                      ? `监控台 · ${String(lastUpdated.getHours()).padStart(2, "0")}:${String(lastUpdated.getMinutes()).padStart(2, "0")} 更新`
                       : "等待同步"}
                 </Text>
               </VStack>
@@ -1825,8 +1819,8 @@ function ConsoleView() {
               >
                 <ZStack
                   frame={{ width: 44, height: 44 }}
-                  background="rgba(0, 122, 255, 0.10)"
-                  border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
+                  background="rgba(255, 255, 255, 0.72)"
+                  border={{ style: "rgba(142, 142, 147, 0.20)", width: 0.75 }}
                   clipShape={{ type: "capsule" }}
                   {...liquidGlass(true)}
                 >
@@ -1841,8 +1835,8 @@ function ConsoleView() {
               >
                 <ZStack
                   frame={{ width: 44, height: 44 }}
-                  background="rgba(0, 122, 255, 0.10)"
-                  border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
+                  background="rgba(255, 255, 255, 0.72)"
+                  border={{ style: "rgba(142, 142, 147, 0.20)", width: 0.75 }}
                   clipShape={{ type: "capsule" }}
                   {...liquidGlass(true)}
                 >
@@ -1879,24 +1873,10 @@ function ConsoleView() {
           )}
 
           {/* Section 1: ECS 实例状态 */}
-          <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
-            <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
-              实例运行状态
-            </Text>
-            <Spacer />
-            <Text font={12} foregroundStyle="secondaryLabel">
-              {config.regionId}
-            </Text>
-          </HStack>
+          <DashboardSectionHeader title="实例运行状态" detail={config.regionId} />
 
           {/* 内容容器：纯白不透明（HIG 分层法则，卡片严禁玻璃叠玻璃） */}
-          <VStack
-            background="systemBackground"
-            clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-            shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
-            spacing={0}
-            frame={{ maxWidth: Infinity, alignment: "leading" }}
-          >
+          <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface()}>
             {/* 实例信息行 */}
             <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
               <ZStack
@@ -1993,8 +1973,8 @@ function ConsoleView() {
           {/* Section 2: 账户资产与实时费用 (Apple Wallet HIG Card) */}
           {data && (
             <>
-              <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
-                <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
+              <HStack padding={{ horizontal: 4, bottom: 2 }} alignment="center">
+                <Text font={15} fontWeight="semibold" foregroundStyle="label">
                   账户资产与费用
                 </Text>
                 <Spacer />
@@ -2012,13 +1992,7 @@ function ConsoleView() {
                 </Button>
               </HStack>
 
-              <VStack
-                background="systemBackground"
-                clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-                shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
-                spacing={0}
-                frame={{ maxWidth: Infinity, alignment: "leading" }}
-              >
+              <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface()}>
                 <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center">
                   {/* 可用现金余额 */}
                   {data.financialBalance && (
@@ -2176,9 +2150,9 @@ function ConsoleView() {
           )}
 
           {/* Section 2: CDT 流量用量卡片 */}
-          <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
-            <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
-              CDT 互联网出网流量
+          <HStack padding={{ horizontal: 4, bottom: 2 }} alignment="center">
+            <Text font={15} fontWeight="semibold" foregroundStyle="label">
+              本月 CDT 流量
             </Text>
             <Spacer />
             {data && (
@@ -2203,13 +2177,7 @@ function ConsoleView() {
           </HStack>
 
           {/* 内容容器：纯白不透明 */}
-          <VStack
-            background="systemBackground"
-            clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-            shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
-            spacing={0}
-            frame={{ maxWidth: Infinity, alignment: "leading" }}
-          >
+          <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface()}>
             {/* 流量主数据 (基线对齐 items-baseline，修复 [object Object] Bug) */}
             <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
               <ZStack
@@ -2221,10 +2189,10 @@ function ConsoleView() {
               </ZStack>
               <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
                 <Text font="subheadline" bold foregroundStyle="label">
-                  出网用量 / 本地参考值
+                  账号汇总出网用量
                 </Text>
                 <Text font="caption2" foregroundStyle="secondaryLabel">
-                  本地月用量参考值: {config.trafficThresholdGB} GB
+                  本地参考值 {config.trafficThresholdGB} GB · 非内地额度 200 GB
                 </Text>
               </VStack>
               {data && (
@@ -2373,21 +2341,8 @@ function ConsoleView() {
 
           {data?.trafficDiagnostics && (
             <>
-              <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
-                <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
-                  CDT 地域明细诊断
-                </Text>
-                <Spacer />
-                <Text font={11} foregroundStyle="secondaryLabel">
-                  只读 · 未映射
-                </Text>
-              </HStack>
-              <VStack
-                background="systemBackground"
-                clipShape={{ type: "rect", cornerRadius: 16, style: "continuous" }}
-                spacing={0}
-                frame={{ maxWidth: Infinity, alignment: "leading" }}
-              >
+              <DashboardSectionHeader title="CDT 地域额度" detail="只读 · 按地域映射" />
+              <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface(16)}>
                 {(["mainland", "nonMainland", "unknown"] as CDTTrafficBucket[]).map(bucket => {
                   const summary = data.trafficDiagnostics!.buckets[bucket]
                   const label = bucket === "mainland"
@@ -2423,15 +2378,15 @@ function ConsoleView() {
                 ))}
               </VStack>
               <Text font={11} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-                已按明确的 BusinessRegionId 映射；未知值保留为未识别，不计入内地 20 GB 或非内地 200 GB。
+                已按 BusinessRegionId 映射；未知值保留为未识别，不计入内地 20 GB 或非内地 200 GB。
               </Text>
             </>
           )}
 
           {/* Section 3: 控制台实时操作日志 */}
-          <HStack padding={{ leading: 8, bottom: 2 }} alignment="center">
-            <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">
-              实时操作日志
+          <HStack padding={{ horizontal: 4, bottom: 2 }} alignment="center">
+            <Text font={15} fontWeight="semibold" foregroundStyle="label">
+              最近活动
             </Text>
             <Spacer />
             <Button
@@ -2459,12 +2414,10 @@ function ConsoleView() {
 
           {/* 日志容器：少量内容收缩，超过五行才使用固定视口滚动 */}
           <VStack
-            background="systemBackground"
-            clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-            shadow={{ color: "rgba(0, 0, 0, 0.04)", radius: 12, x: 0, y: 3 }}
             spacing={0}
             padding={{ horizontal: 16, vertical: 12 }}
             frame={{ maxWidth: Infinity, height: logCardHeight, alignment: "leading" }}
+            {...dashboardSurface()}
           >
             <ScrollView showsIndicators={false} frame={{ maxWidth: Infinity, height: logViewportHeight }}>
               <VStack alignment="leading" spacing={7} frame={{ maxWidth: Infinity, alignment: "leading" }}>
