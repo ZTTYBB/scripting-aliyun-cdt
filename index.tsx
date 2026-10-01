@@ -37,7 +37,7 @@ import {
 
 // ==================== 1. 本地存储配置管理 ====================
 
-const APP_VERSION = "1.6.1"
+const APP_VERSION = "1.6.2"
 
 interface AppConfig {
   accessKeyId: string
@@ -1698,7 +1698,7 @@ function SettingsView({
               <Image systemName="checkmark.shield.fill" font={12} foregroundStyle="systemGreen" />
               <Text font={13} foregroundStyle="secondaryLabel">阿里云 CDT 监控 v{APP_VERSION}</Text>
             </HStack>
-            <Text font={11} foregroundStyle="tertiaryLabel">BSS 账单查询 · Build 2026.09.23</Text>
+            <Text font={11} foregroundStyle="tertiaryLabel">BSS 账单查询 · Build 2026.10.02</Text>
           </VStack>
         </Section>
       </List>
@@ -2019,7 +2019,7 @@ function SettingsView({
             </Text>
           </HStack>
           <Text font={11} foregroundStyle="tertiaryLabel">
-            BSS 账单查询 · Build 2026.09.23
+            BSS 账单查询 · Build 2026.10.02
           </Text>
         </VStack>
       </VStack>

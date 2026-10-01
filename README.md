@@ -1,12 +1,12 @@
 # 阿里云 CDT 免费流量监控与 ECS 财务对账看板 (Scripting iOS)
 
-[![Version](https://img.shields.io/badge/version-1.6.1-blue.svg)](https://github.com/ZTTYBB/scripting-aliyun-cdt)
+[![Version](https://img.shields.io/badge/version-1.6.2-blue.svg)](https://github.com/ZTTYBB/scripting-aliyun-cdt)
 [![Platform](https://img.shields.io/badge/platform-iOS%2016%2B-lightgrey.svg)](https://apps.apple.com/app/scripting/id1575361494)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 专为 iOS **Scripting** 打造的阿里云 CDT 流量监控、BSS 官方账单与 ECS 状态看板，采用原生 TypeScript + TSX 构建，支持 iOS 16+ 桌面全尺寸小组件与应用内只读控制台。
 
-> 💡 **v1.6.1**：手机端只读取阿里云用量、账单与 ECS 状态；VPS 保活、夜间休眠和熔断策略保持独立运行。手机不连接 VPS，也不会对 ECS 执行开机、关机或重启。
+> 💡 **v1.6.2**：手机端只读取阿里云用量、账单与 ECS 状态；小组件恢复每日用量显示并改进采样缓存；VPS 保活、夜间休眠和熔断策略保持独立运行。手机不连接 VPS，也不会对 ECS 执行开机、关机或重启。
 
 ---
 
