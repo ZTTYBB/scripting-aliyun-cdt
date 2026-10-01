@@ -217,7 +217,16 @@ function buildDailyUsage(config: AppConfig, totalGB: number, now: Date): DailyUs
     console.error("保存流量历史失败:", error)
   }
 
-  const byDate = new Map(history.snapshots.map(item => [item.date, item]))
+  return buildDailyUsageFromSnapshots(history.snapshots, now)
+}
+
+function buildDailyUsageFromSnapshots(snapshots: TrafficSnapshot[], now: Date): DailyUsagePoint[] {
+  const month = localDateKey(now).slice(0, 7)
+  const byDate = new Map(
+    snapshots
+      .filter(item => item?.date?.startsWith(month) && Number.isFinite(item?.totalGB))
+      .map(item => [item.date, item])
+  )
   const weekdayLabels = ["日", "一", "二", "三", "四", "五", "六"]
 
   return Array.from({ length: 7 }, (_, index) => {
@@ -239,6 +248,25 @@ function buildDailyUsage(config: AppConfig, totalGB: number, now: Date): DailyUs
       isToday: index === 6
     }
   })
+}
+
+function readDailyUsageFromHistory(config: AppConfig, now: Date): DailyUsagePoint[] {
+  try {
+    const saved = Storage.get(TRAFFIC_HISTORY_KEY)
+    if (!saved) return buildUnavailableDailyUsage(now)
+    const parsed = typeof saved === "string" ? JSON.parse(saved) : saved
+    if (
+      parsed?.version !== 1 ||
+      parsed?.scope !== historyScope(config) ||
+      parsed?.month !== localDateKey(now).slice(0, 7) ||
+      !Array.isArray(parsed?.snapshots)
+    ) {
+      return buildUnavailableDailyUsage(now)
+    }
+    return buildDailyUsageFromSnapshots(parsed.snapshots, now)
+  } catch {
+    return buildUnavailableDailyUsage(now)
+  }
 }
 
 // ==================== 2. 纯 TS HMAC-SHA1 与 POP 签名算法 ====================
@@ -467,11 +495,10 @@ function buildUnavailableDailyUsage(now: Date): DailyUsagePoint[] {
 }
 
 /**
- * The app dashboard stores ConsoleData, which intentionally has no local
- * sampling series. Validate its stable source fields before adapting it for a
- * widget fallback; never pass an untyped Storage value into a widget view.
+ * The app dashboard snapshot has no embedded chart series. Validate its stable
+ * source fields, then restore the shared local sampling history for fallback.
  */
-function adaptDashboardSnapshotForWidget(raw: unknown): WidgetData | null {
+function adaptDashboardSnapshotForWidget(raw: unknown, config: AppConfig): WidgetData | null {
   if (!isRecord(raw)) return null
 
   const totalGB = raw.totalGB
@@ -503,6 +530,13 @@ function adaptDashboardSnapshotForWidget(raw: unknown): WidgetData | null {
   const publicIp = typeof raw.publicIp === "string" && raw.publicIp.trim()
     ? raw.publicIp.trim()
     : undefined
+  const dailyUsage = readDailyUsageFromHistory(config, new Date())
+  const knownDailyValues = dailyUsage
+    .map(item => item.valueGB)
+    .filter((value): value is number => value !== null)
+  const sevenDayTotalGB = knownDailyValues.length > 0
+    ? Number(knownDailyValues.reduce((sum, value) => sum + value, 0).toFixed(2))
+    : null
 
   return {
     totalGB,
@@ -513,10 +547,9 @@ function adaptDashboardSnapshotForWidget(raw: unknown): WidgetData | null {
     percentage,
     daysRemaining,
     dailyBudgetGB: (remainingGB / daysRemaining).toFixed(2),
-    // The dashboard does not save local daily samples, so these remain unknown.
-    dailyUsage: buildUnavailableDailyUsage(updatedAt),
-    sevenDayTotalGB: null,
-    todayEstimatedGB: null,
+    dailyUsage,
+    sevenDayTotalGB,
+    todayEstimatedGB: dailyUsage[dailyUsage.length - 1]?.valueGB ?? null,
     updatedAt,
     ecsStatus: normalizeEcsStatus(raw.ecsStatus),
     publicIp,
@@ -793,7 +826,14 @@ function DailyBars({
   const maximum = Math.max(0.01, ...knownValues)
 
   return (
-    <HStack spacing={spacing} alignment="bottom" frame={{ maxWidth: Infinity }}>
+    <HStack
+      spacing={spacing}
+      alignment="bottom"
+      padding={{ horizontal: 8, vertical: 7 }}
+      background={WIDGET_PANEL}
+      clipShape={{ type: "rect", cornerRadius: 12, style: "continuous" }}
+      frame={{ maxWidth: Infinity }}
+    >
       {data.dailyUsage.map(point => {
         const fillHeight = point.valueGB === null || point.valueGB <= 0
           ? 0
@@ -810,7 +850,14 @@ function DailyBars({
                 monospacedDigit
                 lineLimit={1}
                 minScaleFactor={0.72}
-                foregroundStyle={point.isToday ? "systemBlue" : "secondaryLabel"}
+                foregroundStyle={
+                  point.valueGB === null
+                    ? WIDGET_TERTIARY
+                    : point.isToday
+                      ? "systemBlue"
+                      : "secondaryLabel"
+                }
+                frame={{ height: 11 }}
               >
                 {formatEstimate(point.valueGB, fullWeekday ? 2 : 1)}
               </Text>
@@ -818,15 +865,15 @@ function DailyBars({
             <VStack
               spacing={0}
               frame={{ width: barWidth, height: chartHeight, alignment: "bottom" }}
-              background={WIDGET_TRACK}
-              clipShape={{ type: "capsule" }}
+              background={point.isToday ? "rgba(0, 122, 255, 0.14)" : WIDGET_TRACK}
+              clipShape={{ type: "rect", cornerRadius: 5, style: "continuous" }}
             >
               <Spacer />
               {point.valueGB !== null && point.valueGB > 0 && (
                 <VStack
                   frame={{ width: barWidth, height: fillHeight }}
                   background={fillColor}
-                  clipShape={{ type: "capsule" }}
+                  clipShape={{ type: "rect", cornerRadius: 5, style: "continuous" }}
                 />
               )}
             </VStack>
@@ -965,7 +1012,7 @@ function MediumWidgetView({ data }: { data: WidgetData }) {
           </HStack>
         </VStack>
       </HStack>
-      <DailyBars data={data} chartHeight={28} barWidth={11} spacing={2} showValues={false} fullWeekday={false} />
+      <DailyBars data={data} chartHeight={28} barWidth={11} spacing={2} showValues={true} fullWeekday={false} />
     </VStack>
   )
 }
@@ -1163,7 +1210,7 @@ async function main() {
         const raw = Storage.get(DASHBOARD_SNAPSHOT_STORAGE_KEY)
         if (raw) {
           const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
-          const cached = adaptDashboardSnapshotForWidget(parsed)
+          const cached = adaptDashboardSnapshotForWidget(parsed, config)
           if (!cached) throw new Error("本地快照数据不完整")
           presentDataWidget(cached)
           return

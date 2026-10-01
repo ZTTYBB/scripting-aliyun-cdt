@@ -50,6 +50,7 @@ interface AppConfig {
 }
 
 const STORAGE_KEY = "aliyun_cdt_monitor_config"
+const TRAFFIC_HISTORY_KEY = "aliyun_cdt_daily_history_v1"
 
 const DEFAULT_CONFIG: AppConfig = {
   accessKeyId: "",
@@ -285,6 +286,79 @@ export interface MonthlyBillInfo {
   cdtAmount: string
   ecsDailyList: DailyExpenseItem[]
   eipDailyList: DailyExpenseItem[]
+}
+
+interface TrafficSnapshot {
+  date: string
+  totalGB: number
+  updatedAt: number
+}
+
+interface TrafficHistory {
+  version: 1
+  scope: string
+  month: string
+  snapshots: TrafficSnapshot[]
+}
+
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+}
+
+function historyScope(config: AppConfig): string {
+  const source = `${config.accessKeyId.trim()}|cdt`
+  let hash = 2166136261
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+function recordTrafficSnapshot(config: AppConfig, totalGB: number, now: Date): void {
+  if (typeof Storage === "undefined" || !Storage?.get || !Storage?.set) return
+
+  const today = localDateKey(now)
+  const month = today.slice(0, 7)
+  const scope = historyScope(config)
+  let history: TrafficHistory = { version: 1, scope, month, snapshots: [] }
+
+  try {
+    const saved = Storage.get(TRAFFIC_HISTORY_KEY)
+    if (saved) {
+      const parsed = typeof saved === "string" ? JSON.parse(saved) : saved
+      if (parsed?.version === 1 && parsed?.scope === scope && parsed?.month === month && Array.isArray(parsed?.snapshots)) {
+        history = parsed as TrafficHistory
+      }
+    }
+  } catch {}
+
+  const validSnapshots = history.snapshots
+    .filter(item => item?.date?.startsWith(month) && Number.isFinite(item?.totalGB))
+    .sort((a, b) => a.date.localeCompare(b.date))
+  const latest = validSnapshots[validSnapshots.length - 1]
+
+  // A lower cumulative value means the provider reset or changed its counter.
+  if (latest && totalGB + 0.005 < latest.totalGB) {
+    history.snapshots = []
+  }
+
+  const current = history.snapshots.find(item => item.date === today)
+  if (current) {
+    current.totalGB = totalGB
+    current.updatedAt = now.getTime()
+  } else {
+    history.snapshots.push({ date: today, totalGB, updatedAt: now.getTime() })
+  }
+
+  history.snapshots = history.snapshots
+    .filter(item => item?.date?.startsWith(month) && Number.isFinite(item?.totalGB))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-32)
+
+  try {
+    Storage.set(TRAFFIC_HISTORY_KEY, JSON.stringify(history))
+  } catch {}
 }
 
 interface MonthlyBillHistoryItem {
@@ -628,6 +702,8 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   const trafficDiagnostics = buildCDTTrafficDiagnostics(details)
   const totalBytes = details.reduce((sum, item) => sum + trafficBytes(item.Traffic), 0)
   const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
+  const trafficSampledAt = new Date()
+  recordTrafficSnapshot(config, totalGB, trafficSampledAt)
   const thresholdGB = config.trafficThresholdGB
   const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
   const cutoffRemainingGB = Math.max(0, Number((vpsCutoffReferenceGB - totalGB).toFixed(2)))
@@ -655,7 +731,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   // 3. 纯统计模式：控制台仅只读拉取用量与账单，关机熔断由 VPS 独立守护
 
   // 4. 重置日与时间进度推算
-  const now = new Date()
+  const now = trafficSampledAt
   const currentDay = now.getDate()
   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
   const daysRemaining = Math.max(1, lastDay - currentDay + 1)
