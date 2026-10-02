@@ -811,7 +811,8 @@ function DailyBars({
   barWidth,
   spacing,
   showValues,
-  fullWeekday
+  fullWeekday,
+  compact = false
 }: {
   data: WidgetData
   chartHeight: number
@@ -819,6 +820,7 @@ function DailyBars({
   spacing: number
   showValues: boolean
   fullWeekday: boolean
+  compact?: boolean
 }) {
   const knownValues = data.dailyUsage
     .map(item => item.valueGB)
@@ -829,7 +831,7 @@ function DailyBars({
     <HStack
       spacing={spacing}
       alignment="bottom"
-      padding={{ horizontal: 8, vertical: 7 }}
+      padding={{ horizontal: compact ? 5 : 8, vertical: compact ? 4 : 7 }}
       background={WIDGET_PANEL}
       clipShape={{ type: "rect", cornerRadius: 12, style: "continuous" }}
       frame={{ maxWidth: Infinity }}
@@ -842,10 +844,10 @@ function DailyBars({
         const fillColor = point.isToday ? "systemBlue" : "systemGreen"
 
         return (
-          <VStack key={point.date} spacing={3} alignment="center" frame={{ maxWidth: Infinity }}>
+          <VStack key={point.date} spacing={compact ? 2 : 3} alignment="center" frame={{ maxWidth: Infinity }}>
             {showValues && (
               <Text
-                font={8}
+                font={compact ? 7 : 8}
                 bold={point.isToday}
                 monospacedDigit
                 lineLimit={1}
@@ -857,7 +859,7 @@ function DailyBars({
                       ? "systemBlue"
                       : "secondaryLabel"
                 }
-                frame={{ height: 11 }}
+                frame={{ height: compact ? 9 : 11 }}
               >
                 {formatEstimate(point.valueGB, fullWeekday ? 2 : 1)}
               </Text>
@@ -878,7 +880,7 @@ function DailyBars({
               )}
             </VStack>
             <Text
-              font={8}
+              font={compact ? 7 : 8}
               bold={point.isToday}
               lineLimit={1}
               foregroundStyle={point.isToday ? "systemBlue" : "secondaryLabel"}
@@ -976,43 +978,51 @@ function MediumWidgetView({ data }: { data: WidgetData }) {
   return (
     <VStack
       alignment="leading"
-      spacing={8}
-      padding={{ horizontal: 15, vertical: 12 }}
+      spacing={4}
+      padding={{ horizontal: 13, vertical: 7 }}
       widgetBackground="systemBackground"
       frame={{ maxWidth: Infinity, maxHeight: Infinity }}
     >
-      <WidgetHeader data={data} />
+      <WidgetHeader data={data} compact />
       <HStack spacing={12} alignment="center" frame={{ maxWidth: Infinity, maxHeight: Infinity }}>
         <VStack
           alignment="leading"
-          spacing={5}
-          padding={{ horizontal: 11, vertical: 9 }}
+          spacing={3}
+          padding={{ horizontal: 9, vertical: 7 }}
           background={WIDGET_PANEL}
           clipShape={{ type: "rect", cornerRadius: 14, style: "continuous" }}
-          frame={{ width: 120 }}
+          frame={{ width: 116 }}
         >
-          <Text font={8} foregroundStyle={WIDGET_SECONDARY}>本月互联网出网</Text>
+          <Text font={7} foregroundStyle={WIDGET_SECONDARY}>本月互联网出网</Text>
           <HStack alignment="lastTextBaseline" spacing={3}>
-            <Text font={25} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle="label">
+            <Text font={23} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle="label">
               {data.totalGB.toFixed(2)}
             </Text>
-            <Text font={9} foregroundStyle={WIDGET_SECONDARY}>GB</Text>
+            <Text font={8} foregroundStyle={WIDGET_SECONDARY}>GB</Text>
           </HStack>
           <WidgetProgressBar data={data} />
         </VStack>
 
-        <VStack alignment="leading" spacing={8} frame={{ maxWidth: Infinity }}>
-          <HStack spacing={12} frame={{ maxWidth: Infinity }}>
+        <VStack alignment="leading" spacing={5} frame={{ maxWidth: Infinity }}>
+          <HStack spacing={8} frame={{ maxWidth: Infinity }}>
             <WidgetMetric label="参考余量" value={`${data.remainingGB.toFixed(1)} GB`} accent={data.color} />
             <WidgetMetric label="日均可用" value={`${data.dailyBudgetGB} GB`} />
           </HStack>
-          <HStack spacing={12} frame={{ maxWidth: Infinity }}>
+          <HStack spacing={8} frame={{ maxWidth: Infinity }}>
             <WidgetMetric label="距结算" value={`${data.daysRemaining} 天`} />
             <WidgetMetric label="近 7 日" value={`${formatEstimate(data.sevenDayTotalGB)} GB`} />
           </HStack>
         </VStack>
       </HStack>
-      <DailyBars data={data} chartHeight={28} barWidth={11} spacing={2} showValues={true} fullWeekday={false} />
+      <DailyBars
+        data={data}
+        chartHeight={16}
+        barWidth={9}
+        spacing={1}
+        showValues={true}
+        fullWeekday={false}
+        compact
+      />
     </VStack>
   )
 }
