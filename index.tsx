@@ -37,7 +37,7 @@ import {
 
 // ==================== 1. 本地存储配置管理 ====================
 
-const APP_VERSION = "1.6.3"
+const APP_VERSION = "1.6.4"
 
 interface AppConfig {
   accessKeyId: string

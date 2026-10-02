@@ -831,7 +831,7 @@ function DailyBars({
     <HStack
       spacing={spacing}
       alignment="bottom"
-      padding={{ horizontal: compact ? 5 : 8, vertical: compact ? 4 : 7 }}
+      padding={{ horizontal: compact ? 5 : 8, vertical: compact ? 2 : 7 }}
       background={WIDGET_PANEL}
       clipShape={{ type: "rect", cornerRadius: 12, style: "continuous" }}
       frame={{ maxWidth: Infinity }}
@@ -844,10 +844,10 @@ function DailyBars({
         const fillColor = point.isToday ? "systemBlue" : "systemGreen"
 
         return (
-          <VStack key={point.date} spacing={compact ? 2 : 3} alignment="center" frame={{ maxWidth: Infinity }}>
+          <VStack key={point.date} spacing={compact ? 1 : 3} alignment="center" frame={{ maxWidth: Infinity }}>
             {showValues && (
               <Text
-                font={compact ? 7 : 8}
+                font={compact ? 6 : 8}
                 bold={point.isToday}
                 monospacedDigit
                 lineLimit={1}
@@ -859,7 +859,7 @@ function DailyBars({
                       ? "systemBlue"
                       : "secondaryLabel"
                 }
-                frame={{ height: compact ? 9 : 11 }}
+                frame={{ height: compact ? 7 : 11 }}
               >
                 {formatEstimate(point.valueGB, fullWeekday ? 2 : 1)}
               </Text>
@@ -880,7 +880,7 @@ function DailyBars({
               )}
             </VStack>
             <Text
-              font={compact ? 7 : 8}
+              font={compact ? 6 : 8}
               bold={point.isToday}
               lineLimit={1}
               foregroundStyle={point.isToday ? "systemBlue" : "secondaryLabel"}
@@ -978,24 +978,24 @@ function MediumWidgetView({ data }: { data: WidgetData }) {
   return (
     <VStack
       alignment="leading"
-      spacing={4}
-      padding={{ horizontal: 13, vertical: 7 }}
+      spacing={3}
+      padding={{ horizontal: 13, vertical: 5 }}
       widgetBackground="systemBackground"
       frame={{ maxWidth: Infinity, maxHeight: Infinity }}
     >
       <WidgetHeader data={data} compact />
-      <HStack spacing={12} alignment="center" frame={{ maxWidth: Infinity, maxHeight: Infinity }}>
+      <HStack spacing={10} alignment="center" frame={{ maxWidth: Infinity }}>
         <VStack
           alignment="leading"
-          spacing={3}
-          padding={{ horizontal: 9, vertical: 7 }}
+          spacing={2}
+          padding={{ horizontal: 9, vertical: 5 }}
           background={WIDGET_PANEL}
           clipShape={{ type: "rect", cornerRadius: 14, style: "continuous" }}
           frame={{ width: 116 }}
         >
           <Text font={7} foregroundStyle={WIDGET_SECONDARY}>本月互联网出网</Text>
           <HStack alignment="lastTextBaseline" spacing={3}>
-            <Text font={23} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle="label">
+            <Text font={21} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle="label">
               {data.totalGB.toFixed(2)}
             </Text>
             <Text font={8} foregroundStyle={WIDGET_SECONDARY}>GB</Text>
@@ -1003,7 +1003,7 @@ function MediumWidgetView({ data }: { data: WidgetData }) {
           <WidgetProgressBar data={data} />
         </VStack>
 
-        <VStack alignment="leading" spacing={5} frame={{ maxWidth: Infinity }}>
+        <VStack alignment="leading" spacing={4} frame={{ maxWidth: Infinity }}>
           <HStack spacing={8} frame={{ maxWidth: Infinity }}>
             <WidgetMetric label="参考余量" value={`${data.remainingGB.toFixed(1)} GB`} accent={data.color} />
             <WidgetMetric label="日均可用" value={`${data.dailyBudgetGB} GB`} />
@@ -1016,7 +1016,7 @@ function MediumWidgetView({ data }: { data: WidgetData }) {
       </HStack>
       <DailyBars
         data={data}
-        chartHeight={16}
+        chartHeight={10}
         barWidth={9}
         spacing={1}
         showValues={true}
