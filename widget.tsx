@@ -22,6 +22,7 @@ import {
   Divider,
   ProgressView
 } from "scripting"
+import { MediumWidgetView } from "./medium_widget"
 
 const WIDGET_TRACK = {
   light: "rgba(142, 142, 147, 0.18)",
@@ -969,60 +970,6 @@ function SmallWidgetView({ data }: { data: WidgetData }) {
           ECS {getECSStatusMeta(data.ecsStatus).shortLabel}
         </Text>
       </HStack>
-    </VStack>
-  )
-}
-
-/** 中号小组件 (systemMedium) */
-function MediumWidgetView({ data }: { data: WidgetData }) {
-  return (
-    <VStack
-      alignment="leading"
-      spacing={3}
-      padding={{ horizontal: 13, vertical: 5 }}
-      widgetBackground="systemBackground"
-      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
-    >
-      <WidgetHeader data={data} compact />
-      <HStack spacing={10} alignment="center" frame={{ maxWidth: Infinity }}>
-        <VStack
-          alignment="leading"
-          spacing={2}
-          padding={{ horizontal: 9, vertical: 5 }}
-          background={WIDGET_PANEL}
-          clipShape={{ type: "rect", cornerRadius: 14, style: "continuous" }}
-          frame={{ width: 116 }}
-        >
-          <Text font={7} foregroundStyle={WIDGET_SECONDARY}>本月互联网出网</Text>
-          <HStack alignment="lastTextBaseline" spacing={3}>
-            <Text font={21} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle="label">
-              {data.totalGB.toFixed(2)}
-            </Text>
-            <Text font={8} foregroundStyle={WIDGET_SECONDARY}>GB</Text>
-          </HStack>
-          <WidgetProgressBar data={data} />
-        </VStack>
-
-        <VStack alignment="leading" spacing={4} frame={{ maxWidth: Infinity }}>
-          <HStack spacing={8} frame={{ maxWidth: Infinity }}>
-            <WidgetMetric label="参考余量" value={`${data.remainingGB.toFixed(1)} GB`} accent={data.color} />
-            <WidgetMetric label="日均可用" value={`${data.dailyBudgetGB} GB`} />
-          </HStack>
-          <HStack spacing={8} frame={{ maxWidth: Infinity }}>
-            <WidgetMetric label="距结算" value={`${data.daysRemaining} 天`} />
-            <WidgetMetric label="近 7 日" value={`${formatEstimate(data.sevenDayTotalGB)} GB`} />
-          </HStack>
-        </VStack>
-      </HStack>
-      <DailyBars
-        data={data}
-        chartHeight={10}
-        barWidth={9}
-        spacing={1}
-        showValues={true}
-        fullWeekday={false}
-        compact
-      />
     </VStack>
   )
 }
