@@ -23,6 +23,16 @@ import {
   ProgressView
 } from "scripting"
 import { MediumWidgetView } from "./medium_widget"
+import {
+  DailyUsagePoint,
+  createSnapshot,
+  readSnapshot,
+  recordTrafficSample,
+  readDailyUsage,
+  sumCompleteSevenDays,
+  assertSampleBillingMonth,
+  withRequestTimeout
+} from "./monitor_runtime"
 
 const WIDGET_TRACK = {
   light: "rgba(142, 142, 147, 0.18)",
@@ -57,8 +67,8 @@ interface AppConfig {
 }
 
 const STORAGE_KEY = "aliyun_cdt_monitor_config"
-const TRAFFIC_HISTORY_KEY = "aliyun_cdt_daily_history_v1"
 const DASHBOARD_SNAPSHOT_STORAGE_KEY = "aliyun_cdt_dashboard_cache"
+const WIDGET_SNAPSHOT_STORAGE_KEY = "aliyun_cdt_widget_cache"
 const WIDGET_REFRESH_AFTER_MS = 15 * 60 * 1000
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -94,12 +104,6 @@ function isConfigReady(cfg: AppConfig): boolean {
   )
 }
 
-interface TrafficSnapshot {
-  date: string
-  totalGB: number
-  updatedAt: number
-}
-
 type ECSIpValue = string | string[] | undefined
 
 interface ECSInstanceRecord {
@@ -133,141 +137,6 @@ function getInstancePublicIp(instance?: ECSInstanceRecord): string | undefined {
     || firstIp(instance?.PublicIpAddress?.IpAddress)
     || firstIp(instance?.EipAddresses)
     || firstIp(instance?.PublicIpAddresses)
-}
-
-interface TrafficHistory {
-  version: 1
-  scope: string
-  month: string
-  snapshots: TrafficSnapshot[]
-}
-
-interface DailyUsagePoint {
-  date: string
-  label: string
-  valueGB: number | null
-  isToday: boolean
-}
-
-function localDateKey(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, "0")
-  const day = String(date.getDate()).padStart(2, "0")
-  return `${year}-${month}-${day}`
-}
-
-function offsetDate(date: Date, dayOffset: number): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + dayOffset)
-}
-
-function historyScope(config: AppConfig): string {
-  const source = `${config.accessKeyId.trim()}|cdt`
-  let hash = 2166136261
-  for (let i = 0; i < source.length; i++) {
-    hash ^= source.charCodeAt(i)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(36)
-}
-
-function loadTrafficHistory(): TrafficHistory | null {
-  try {
-    const saved = Storage.get(TRAFFIC_HISTORY_KEY)
-    if (!saved) return null
-    const parsed = typeof saved === "string" ? JSON.parse(saved) : saved
-    if (parsed?.version !== 1 || !Array.isArray(parsed?.snapshots)) return null
-    return parsed as TrafficHistory
-  } catch (error) {
-    console.error("读取流量历史失败:", error)
-    return null
-  }
-}
-
-function buildDailyUsage(config: AppConfig, totalGB: number, now: Date): DailyUsagePoint[] {
-  const today = localDateKey(now)
-  const month = today.slice(0, 7)
-  const scope = historyScope(config)
-  let history = loadTrafficHistory()
-
-  if (history?.scope !== scope || history?.month !== month) {
-    history = { version: 1, scope, month, snapshots: [] }
-  }
-
-  const snapshots = history.snapshots
-    .filter(item => item?.date?.startsWith(month) && Number.isFinite(item?.totalGB))
-    .sort((a, b) => a.date.localeCompare(b.date))
-  const latestSnapshot = snapshots[snapshots.length - 1]
-
-  // 月累计值下降通常代表账期重置或接口口径变化，旧基线不能继续使用。
-  if (latestSnapshot && totalGB + 0.005 < latestSnapshot.totalGB) {
-    snapshots.length = 0
-  }
-
-  const todaySnapshot = snapshots.find(item => item.date === today)
-  if (todaySnapshot) {
-    todaySnapshot.totalGB = totalGB
-    todaySnapshot.updatedAt = now.getTime()
-  } else {
-    snapshots.push({ date: today, totalGB, updatedAt: now.getTime() })
-  }
-
-  history.snapshots = snapshots.slice(-32)
-  try {
-    Storage.set(TRAFFIC_HISTORY_KEY, JSON.stringify(history))
-  } catch (error) {
-    console.error("保存流量历史失败:", error)
-  }
-
-  return buildDailyUsageFromSnapshots(history.snapshots, now)
-}
-
-function buildDailyUsageFromSnapshots(snapshots: TrafficSnapshot[], now: Date): DailyUsagePoint[] {
-  const month = localDateKey(now).slice(0, 7)
-  const byDate = new Map(
-    snapshots
-      .filter(item => item?.date?.startsWith(month) && Number.isFinite(item?.totalGB))
-      .map(item => [item.date, item])
-  )
-  const weekdayLabels = ["日", "一", "二", "三", "四", "五", "六"]
-
-  return Array.from({ length: 7 }, (_, index) => {
-    const date = offsetDate(now, index - 6)
-    const dateKey = localDateKey(date)
-    const previousKey = localDateKey(offsetDate(date, -1))
-    const current = byDate.get(dateKey)
-    const previous = byDate.get(previousKey)
-    let valueGB: number | null = null
-
-    if (current && previous && current.totalGB + 0.005 >= previous.totalGB) {
-      valueGB = Math.max(0, Number((current.totalGB - previous.totalGB).toFixed(2)))
-    }
-
-    return {
-      date: dateKey,
-      label: index === 6 ? "今" : weekdayLabels[date.getDay()],
-      valueGB,
-      isToday: index === 6
-    }
-  })
-}
-
-function readDailyUsageFromHistory(config: AppConfig, now: Date): DailyUsagePoint[] {
-  try {
-    const saved = Storage.get(TRAFFIC_HISTORY_KEY)
-    if (!saved) return buildUnavailableDailyUsage(now)
-    const parsed = typeof saved === "string" ? JSON.parse(saved) : saved
-    if (
-      parsed?.version !== 1 ||
-      parsed?.scope !== historyScope(config) ||
-      parsed?.month !== localDateKey(now).slice(0, 7) ||
-      !Array.isArray(parsed?.snapshots)
-    ) {
-      return buildUnavailableDailyUsage(now)
-    }
-    return buildDailyUsageFromSnapshots(parsed.snapshots, now)
-  } catch {
-    return buildUnavailableDailyUsage(now)
-  }
 }
 
 // ==================== 2. 纯 TS HMAC-SHA1 与 POP 签名算法 ====================
@@ -418,18 +287,21 @@ async function aliyunRequest<T = any>(
   const requestUrl = `https://${domain}/`
   const bodyString = `${canonicalizedQueryString}&Signature=${percentEncode(signature)}`
 
-  const response = await fetch(requestUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: bodyString
-  })
+  return withRequestTimeout(async signal => {
+    const response = await fetch(requestUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: bodyString,
+      ...(signal ? { signal } : {})
+    })
 
-  if (!response.ok) {
-    const err = await response.text()
-    throw new Error(`Aliyun [${action}] 错误 (${response.status}): ${err}`)
-  }
+    if (!response.ok) {
+      const err = await response.text()
+      throw new Error(`Aliyun [${action}] 错误 (${response.status}): ${err}`)
+    }
 
-  return (await response.json()) as T
+    return (await response.json()) as T
+  }, action)
 }
 
 // ==================== 3. 业务数据模型 ====================
@@ -450,6 +322,7 @@ interface WidgetData {
   ecsStatus: "Running" | "Stopped" | "Starting" | "Stopping" | "Unknown"
   publicIp?: string
   color: string
+  isCached?: boolean
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -461,8 +334,9 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function parseCachedDate(value: unknown): Date | null {
-  if (value instanceof Date) {
-    return Number.isFinite(value.getTime()) ? value : null
+  if (value instanceof Date || Object.prototype.toString.call(value) === "[object Date]") {
+    const date = value as Date
+    return Number.isFinite(date.getTime()) ? date : null
   }
   if (typeof value !== "string" && typeof value !== "number") return null
   const date = new Date(value)
@@ -481,30 +355,16 @@ function normalizeEcsStatus(value: unknown): WidgetData["ecsStatus"] {
   }
 }
 
-function buildUnavailableDailyUsage(now: Date): DailyUsagePoint[] {
-  const weekdayLabels = ["日", "一", "二", "三", "四", "五", "六"]
-
-  return Array.from({ length: 7 }, (_, index) => {
-    const date = offsetDate(now, index - 6)
-    return {
-      date: localDateKey(date),
-      label: index === 6 ? "今" : weekdayLabels[date.getDay()],
-      valueGB: null,
-      isToday: index === 6
-    }
-  })
-}
-
 /**
  * The app dashboard snapshot has no embedded chart series. Validate its stable
  * source fields, then restore the shared local sampling history for fallback.
  */
-function adaptDashboardSnapshotForWidget(raw: unknown, config: AppConfig): WidgetData | null {
+function adaptDashboardSnapshotForWidget(raw: unknown, config: AppConfig, now: Date = new Date()): WidgetData | null {
   if (!isRecord(raw)) return null
 
   const totalGB = raw.totalGB
-  const thresholdGB = raw.thresholdGB
-  const vpsCutoffReferenceGB = raw.vpsCutoffReferenceGB
+  const thresholdGB = config.trafficThresholdGB
+  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB
   const updatedAt = parseCachedDate(raw.updatedAt)
 
   if (
@@ -516,10 +376,7 @@ function adaptDashboardSnapshotForWidget(raw: unknown, config: AppConfig): Widge
     return null
   }
 
-  const cachedDaysRemaining = raw.daysRemaining
-  const daysRemaining = isFiniteNumber(cachedDaysRemaining) && cachedDaysRemaining >= 1
-    ? Math.max(1, Math.round(cachedDaysRemaining))
-    : Math.max(1, new Date(updatedAt.getFullYear(), updatedAt.getMonth() + 1, 0).getDate() - updatedAt.getDate() + 1)
+  const daysRemaining = Math.max(1, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1)
   const cutoffRemainingGB = Math.max(0, Number((vpsCutoffReferenceGB - totalGB).toFixed(2)))
   const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
   const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
@@ -531,13 +388,8 @@ function adaptDashboardSnapshotForWidget(raw: unknown, config: AppConfig): Widge
   const publicIp = typeof raw.publicIp === "string" && raw.publicIp.trim()
     ? raw.publicIp.trim()
     : undefined
-  const dailyUsage = readDailyUsageFromHistory(config, new Date())
-  const knownDailyValues = dailyUsage
-    .map(item => item.valueGB)
-    .filter((value): value is number => value !== null)
-  const sevenDayTotalGB = knownDailyValues.length > 0
-    ? Number(knownDailyValues.reduce((sum, value) => sum + value, 0).toFixed(2))
-    : null
+  const dailyUsage = readDailyUsage(config, now)
+  const sevenDayTotalGB = sumCompleteSevenDays(dailyUsage)
 
   return {
     totalGB,
@@ -554,16 +406,28 @@ function adaptDashboardSnapshotForWidget(raw: unknown, config: AppConfig): Widge
     updatedAt,
     ecsStatus: normalizeEcsStatus(raw.ecsStatus),
     publicIp,
-    color
+    color,
+    isCached: true
   }
 }
 
 async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
+  const sampledAt = new Date()
   // 1. 查询 CDT 流量
-  const cdtData = await aliyunRequest<{
+  const cdtRequest = aliyunRequest<{
     TrafficDetails?: Array<{ Traffic?: number }>
   }>("cdt.aliyuncs.com", "ListCdtInternetTraffic", "2021-08-13", config)
 
+  // 2. CDT/ECS 并行，避免叠加两个超时时间；ECS 失败仍可展示流量。
+  const ecsRequest = aliyunRequest<{
+    Instances?: { Instance?: ECSInstanceRecord[] }
+  }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
+    InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
+    RegionId: config.regionId.trim()
+  }).catch(() => null)
+  const [cdtData, ecsData] = await Promise.all([cdtRequest, ecsRequest])
+  const now = new Date()
+  assertSampleBillingMonth(sampledAt, now)
   const details = cdtData.TrafficDetails || []
   const totalBytes = details.reduce((sum, item) => sum + (item.Traffic || 0), 0)
   const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
@@ -572,40 +436,19 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
   const cutoffRemainingGB = Math.max(0, Number((vpsCutoffReferenceGB - totalGB).toFixed(2)))
   const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
   const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
-
-  // 2. 查询 ECS 状态；失败时仍保留已成功获取的 CDT 用量。
-  let ecsStatus: WidgetData["ecsStatus"] = "Unknown"
-  let publicIp: string | undefined
-  try {
-    const ecsData = await aliyunRequest<{
-      Instances?: {
-        Instance?: ECSInstanceRecord[]
-      }
-    }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
-      InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
-      RegionId: config.regionId.trim()
-    })
-
-    const instance = ecsData.Instances?.Instance?.[0]
-    ecsStatus = (instance?.Status as WidgetData["ecsStatus"]) || "Unknown"
-    publicIp = getInstancePublicIp(instance)
-  } catch {}
+  const instance = ecsData?.Instances?.Instance?.[0]
+  const ecsStatus = normalizeEcsStatus(instance?.Status)
+  const publicIp = getInstancePublicIp(instance)
 
   // 3. 纯统计模式：小组件不执行任何关机请求，仅只读监控流量与状态
 
   // 4. 重置日推算
-  const now = new Date()
   const currentDay = now.getDate()
   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
   const daysRemaining = Math.max(1, lastDay - currentDay + 1)
   const dailyBudgetGB = (remainingGB / daysRemaining).toFixed(2)
-  const dailyUsage = buildDailyUsage(config, totalGB, now)
-  const knownDailyValues = dailyUsage
-    .map(item => item.valueGB)
-    .filter((value): value is number => value !== null)
-  const sevenDayTotalGB = knownDailyValues.length > 0
-    ? Number(knownDailyValues.reduce((sum, value) => sum + value, 0).toFixed(2))
-    : null
+  const dailyUsage = recordTrafficSample(config, totalGB, sampledAt)
+  const sevenDayTotalGB = sumCompleteSevenDays(dailyUsage)
   const todayEstimatedGB = dailyUsage[dailyUsage.length - 1]?.valueGB ?? null
 
   const color = totalGB >= vpsCutoffReferenceGB
@@ -626,7 +469,7 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
     dailyUsage,
     sevenDayTotalGB,
     todayEstimatedGB,
-    updatedAt: now,
+    updatedAt: sampledAt,
     ecsStatus,
     publicIp,
     color
@@ -733,6 +576,10 @@ function formatUpdateTime(date: Date): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
 }
 
+function widgetUpdateLabel(data: WidgetData): string {
+  return `${data.isCached ? "缓存 · " : ""}${formatUpdateTime(data.updatedAt)} 更新`
+}
+
 function WidgetHeader({
   data,
   compact = false
@@ -759,7 +606,7 @@ function WidgetHeader({
       >
         <Circle widgetAccentable fill={status.color} frame={{ width: compact ? 5 : 6, height: compact ? 5 : 6 }} />
         <Text font={compact ? 8 : 9} bold lineLimit={1} foregroundStyle={status.color}>
-          {compact ? status.shortLabel : status.label}
+          {data.isCached ? "缓存 · " : ""}{compact ? status.shortLabel : status.label}
         </Text>
       </HStack>
     </HStack>
@@ -963,7 +810,7 @@ function SmallWidgetView({ data }: { data: WidgetData }) {
 
       <HStack alignment="center" frame={{ maxWidth: Infinity }}>
         <Text font={8} lineLimit={1} foregroundStyle={WIDGET_TERTIARY}>
-          {formatUpdateTime(data.updatedAt)} 更新
+          {widgetUpdateLabel(data)}
         </Text>
         <Spacer />
         <Text font={8} lineLimit={1} foregroundStyle={WIDGET_TERTIARY}>
@@ -1041,7 +888,7 @@ function LargeWidgetView({ data }: { data: WidgetData }) {
         </HStack>
         <Spacer />
         <Text font={9} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
-          {formatUpdateTime(data.updatedAt)} 更新
+          {widgetUpdateLabel(data)}
         </Text>
       </HStack>
     </VStack>
@@ -1061,7 +908,7 @@ function AccessoryCircularView({ data }: { data: WidgetData }) {
         size={52}
         lineWidth={5}
         value={`${data.percentage.toFixed(0)}%`}
-        caption="CDT"
+        caption={data.isCached ? "缓存" : "CDT"}
         valueFont={12}
         captionFont={7}
       />
@@ -1096,7 +943,7 @@ function AccessoryRectangularView({ data }: { data: WidgetData }) {
           <HStack spacing={4} alignment="center">
             <Circle widgetAccentable fill={status.color} frame={{ width: 5, height: 5 }} />
             <Text font={9} bold lineLimit={1} foregroundStyle={status.color}>
-              {status.shortLabel}
+              {data.isCached ? "缓存 · " : ""}{status.shortLabel}
             </Text>
           </HStack>
         </HStack>
@@ -1114,7 +961,7 @@ function AccessoryInlineView({ data }: { data: WidgetData }) {
 
   return (
     <Text lineLimit={1} monospacedDigit>
-      CDT {data.totalGB.toFixed(2)}/{data.thresholdGB}G · {data.vpsCutoffReferenceGB}线余{data.cutoffRemainingGB.toFixed(1)}G · {status.shortLabel}
+      {data.isCached ? "CDT 缓存" : "CDT"} {data.totalGB.toFixed(2)}/{data.thresholdGB}G · {data.vpsCutoffReferenceGB}线余{data.cutoffRemainingGB.toFixed(1)}G · {status.shortLabel}
     </Text>
   )
 }
@@ -1148,9 +995,8 @@ function presentDataWidget(data: WidgetData): void {
 // ==================== 5. 主执行入口 ====================
 
 async function main() {
+  const config = loadSavedConfig()
   try {
-    const config = loadSavedConfig()
-
     // 若未配置，渲染引导提示
     if (!isConfigReady(config)) {
       presentWidget(<NotConfiguredWidgetView />)
@@ -1158,19 +1004,30 @@ async function main() {
     }
 
     const data = await fetchWidgetData(config)
+    assertSampleBillingMonth(data.updatedAt)
+    try {
+      if (typeof Storage !== "undefined" && Storage?.get && Storage?.set) {
+        const existing = readSnapshot<WidgetData>(Storage.get(WIDGET_SNAPSHOT_STORAGE_KEY), config)
+        if (!existing || existing.updatedAt.getTime() <= data.updatedAt.getTime()) {
+          Storage.set(WIDGET_SNAPSHOT_STORAGE_KEY, JSON.stringify(createSnapshot(config, data)))
+        }
+      }
+    } catch (error) {
+      console.error("保存小组件快照失败:", error)
+    }
     presentDataWidget(data)
   } catch (err: any) {
     console.error("小组件加载失败:", err)
     // 弱网容灾：控制台快照缺少日采样字段，必须校验并适配后才能渲染。
     try {
       if (typeof Storage !== "undefined" && Storage?.get) {
-        const raw = Storage.get(DASHBOARD_SNAPSHOT_STORAGE_KEY)
-        if (raw) {
-          const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
-          const cached = adaptDashboardSnapshotForWidget(parsed, config)
-          if (!cached) throw new Error("本地快照数据不完整")
-          presentDataWidget(cached)
-          return
+        for (const key of [WIDGET_SNAPSHOT_STORAGE_KEY, DASHBOARD_SNAPSHOT_STORAGE_KEY]) {
+          const snapshot = readSnapshot(Storage.get(key), config)
+          const cached = adaptDashboardSnapshotForWidget(snapshot, config)
+          if (cached) {
+            presentDataWidget(cached)
+            return
+          }
         }
       }
     } catch {}

@@ -3,6 +3,8 @@
  * 专为 iOS Scripting 环境设计，无需安装任何 npm 包或外部 SDK
  */
 import { AppConfig, DEFAULT_CONFIG } from "./config"
+import { isBillQueryAvailable, queryAccountBillPages, recentBillingDates } from "./bill_queries"
+import { withRequestTimeout } from "./monitor_runtime"
 
 // ==================== 1. 纯 TS HMAC-SHA1 算法实现 ====================
 
@@ -172,25 +174,23 @@ export async function aliyunRequest<T = any>(
   const requestUrl = `https://${options.domain}/`
   const bodyString = `${canonicalizedQueryString}&Signature=${percentEncode(signature)}`
 
-  let response: Response
-  if (method === "GET") {
-    response = await fetch(`${requestUrl}?${bodyString}`)
-  } else {
-    response = await fetch(requestUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: bodyString
-    })
-  }
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`Aliyun API [${options.action}] Error (${response.status}): ${errorText}`)
-  }
-
-  return (await response.json()) as T
+  return withRequestTimeout(async signal => {
+    const response = method === "GET"
+      ? await fetch(`${requestUrl}?${bodyString}`, { signal })
+      : await fetch(requestUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: bodyString,
+        signal
+      })
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`Aliyun API [${options.action}] Error (${response.status}): ${errorText}`)
+    }
+    return (await response.json()) as T
+  }, options.action)
 }
 
 // ==================== 3. 业务数据模型与核心 API ====================
@@ -373,6 +373,7 @@ export interface DailyExpenseItem {
 export interface MonthlyBillInfo {
   billingCycle: string
   paymentAmount: string
+  hasRecords?: boolean
   // Optional so snapshots saved before this metadata was introduced still render safely.
   paymentScope?: "monitoredProducts" | "allProducts"
   outstandingAmount: string
@@ -556,7 +557,6 @@ export class AliyunService {
   async getMonthlyBill(): Promise<MonthlyBillInfo | null> {
     try {
       const now = new Date()
-      const currentDay = now.getDate()
       const cycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
 
       // 1. 优先调用 QueryBillOverview（官方控制台账单总览对齐，按产品维度直接汇总，确保 ECS/EIP 精确识别）
@@ -570,6 +570,7 @@ export class AliyunService {
         OutstandingAmount?: number
         Currency?: string
       }> = []
+      let available = false
 
       try {
         const overviewData = await aliyunRequest<{
@@ -590,43 +591,35 @@ export class AliyunService {
           },
           this.config
         )
-        if (overviewData?.Data?.Items?.Item && overviewData.Data.Items.Item.length > 0) {
-          items = overviewData.Data.Items.Item
+        if (isBillQueryAvailable(overviewData) && overviewData.Data!.Items!.Item!.length > 0) {
+          items = overviewData.Data!.Items!.Item!
+          available = true
         }
       } catch {}
 
-      // 2. 若 QueryBillOverview 无数据，回退至 QueryAccountBill（必须携带 IsGroupByProduct: true 才能返回产品层级分类）
-      if (items.length === 0) {
-        try {
-          const accountBillData = await aliyunRequest<{
-            Data?: {
-              Items?: {
-                Item?: Array<any>
-              }
-            }
-          }>(
+      // 2. 总览为空时仍核对账户账单；仅完整账户空账单可确认为零金额。
+      if (!available) {
+        const accountBillData = await queryAccountBillPages(
+          params => aliyunRequest(
             {
               domain: "business.aliyuncs.com",
               action: "QueryAccountBill",
               version: "2017-12-14",
               method: "POST",
-              params: {
-                BillingCycle: cycle,
-                PageSize: 300,
-                IsGroupByProduct: true
-              }
+              params
             },
             this.config
-          )
-          if (accountBillData?.Data?.Items?.Item && accountBillData.Data.Items.Item.length > 0) {
-            items = accountBillData.Data.Items.Item
+          ),
+          {
+            BillingCycle: cycle,
+            IsGroupByProduct: true
           }
-        } catch {}
+        )
+        available = accountBillData.available
+        items = accountBillData.items
       }
 
-      if (items.length === 0) {
-        return null
-      }
+      if (!available) return null
 
       let allProductsEffective = 0
       let ecsTotal = 0
@@ -685,48 +678,32 @@ export class AliyunService {
       // 查询最近日期的每日账单明细；月内数据可能延迟。
       const ecsDailyList: DailyExpenseItem[] = []
       const eipDailyList: DailyExpenseItem[] = []
-      const daysCount = Math.min(7, currentDay)
-
-      const dateQueries: Array<{ dateStr: string; displayDate: string; isToday: boolean }> = []
-      for (let i = 0; i < daysCount; i++) {
-        const d = new Date(now.getFullYear(), now.getMonth(), currentDay - i)
-        const yyyy = d.getFullYear()
-        const mm = String(d.getMonth() + 1).padStart(2, "0")
-        const dd = String(d.getDate()).padStart(2, "0")
-        dateQueries.push({
-          dateStr: `${yyyy}-${mm}-${dd}`,
-          displayDate: `${mm}-${dd}`,
-          isToday: i === 0
-        })
-      }
+      const dateQueries = recentBillingDates(now)
 
       try {
         const dailyResults = await Promise.all(
           dateQueries.map(async q => {
             try {
-              const dayRes = await aliyunRequest<{
-                Data?: {
-                  Items?: {
-                    Item?: Array<any>
-                  }
-                }
-              }>(
+              const dayRes = await queryAccountBillPages(
+                params => aliyunRequest(
+                  {
+                    domain: "business.aliyuncs.com",
+                    action: "QueryAccountBill",
+                    version: "2017-12-14",
+                    method: "POST",
+                    params
+                  },
+                  this.config
+                ),
                 {
-                  domain: "business.aliyuncs.com",
-                  action: "QueryAccountBill",
-                  version: "2017-12-14",
-                  method: "POST",
-                  params: {
-                    BillingCycle: cycle,
-                    Granularity: "DAILY",
-                    BillingDate: q.dateStr,
-                    PageSize: 300,
-                    IsGroupByProduct: true
-                  }
-                },
-                this.config
+                  BillingCycle: q.billingCycle,
+                  Granularity: "DAILY",
+                  BillingDate: q.dateStr,
+                  IsGroupByProduct: true
+                }
               )
-              const dayItems = dayRes?.Data?.Items?.Item || []
+              if (!dayRes.available) throw new Error("Daily account bill is unavailable")
+              const dayItems = dayRes.items
               let dEcs = 0
               let dEip = 0
               for (const it of dayItems) {
@@ -792,6 +769,7 @@ export class AliyunService {
       return {
         billingCycle: cycle,
         paymentAmount: finalPayment.toFixed(2),
+        hasRecords: items.length > 0,
         paymentScope: hasInfrastructureItems ? "monitoredProducts" : "allProducts",
         outstandingAmount: outstanding.toFixed(2),
         currency,

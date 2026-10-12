@@ -34,6 +34,8 @@ import {
   useEffect,
   useCallback
 } from "scripting"
+import { assertSampleBillingMonth, createRefreshGate, createSnapshot, readSnapshot, recordTrafficSample, withRequestTimeout } from "./monitor_runtime"
+import { isBillQueryAvailable, queryAccountBillPages, recentBillingDates } from "./bill_queries"
 
 // ==================== 1. 本地存储配置管理 ====================
 
@@ -50,7 +52,6 @@ interface AppConfig {
 }
 
 const STORAGE_KEY = "aliyun_cdt_monitor_config"
-const TRAFFIC_HISTORY_KEY = "aliyun_cdt_daily_history_v1"
 
 const DEFAULT_CONFIG: AppConfig = {
   accessKeyId: "",
@@ -243,18 +244,19 @@ async function aliyunRequest<T = any>(
   const requestUrl = `https://${domain}/`
   const bodyString = `${canonicalizedQueryString}&Signature=${percentEncode(signature)}`
 
-  const response = await fetch(requestUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: bodyString
-  })
-
-  if (!response.ok) {
-    const err = await response.text()
-    throw new Error(`Aliyun [${action}] 错误 (${response.status}): ${err}`)
-  }
-
-  return (await response.json()) as T
+  return withRequestTimeout(async signal => {
+    const response = await fetch(requestUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: bodyString,
+      ...(signal ? { signal } : {})
+    })
+    if (!response.ok) {
+      const err = await response.text()
+      throw new Error(`Aliyun [${action}] 错误 (${response.status}): ${err}`)
+    }
+    return (await response.json()) as T
+  }, action)
 }
 
 // ==================== 3. 业务数据模型 ====================
@@ -277,6 +279,7 @@ export interface DailyExpenseItem {
 export interface MonthlyBillInfo {
   billingCycle: string
   paymentAmount: string
+  hasRecords?: boolean
   // Optional so snapshots saved before this metadata was introduced still render safely.
   paymentScope?: "monitoredProducts" | "allProducts"
   outstandingAmount: string
@@ -286,79 +289,6 @@ export interface MonthlyBillInfo {
   cdtAmount: string
   ecsDailyList: DailyExpenseItem[]
   eipDailyList: DailyExpenseItem[]
-}
-
-interface TrafficSnapshot {
-  date: string
-  totalGB: number
-  updatedAt: number
-}
-
-interface TrafficHistory {
-  version: 1
-  scope: string
-  month: string
-  snapshots: TrafficSnapshot[]
-}
-
-function localDateKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
-}
-
-function historyScope(config: AppConfig): string {
-  const source = `${config.accessKeyId.trim()}|cdt`
-  let hash = 2166136261
-  for (let i = 0; i < source.length; i++) {
-    hash ^= source.charCodeAt(i)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(36)
-}
-
-function recordTrafficSnapshot(config: AppConfig, totalGB: number, now: Date): void {
-  if (typeof Storage === "undefined" || !Storage?.get || !Storage?.set) return
-
-  const today = localDateKey(now)
-  const month = today.slice(0, 7)
-  const scope = historyScope(config)
-  let history: TrafficHistory = { version: 1, scope, month, snapshots: [] }
-
-  try {
-    const saved = Storage.get(TRAFFIC_HISTORY_KEY)
-    if (saved) {
-      const parsed = typeof saved === "string" ? JSON.parse(saved) : saved
-      if (parsed?.version === 1 && parsed?.scope === scope && parsed?.month === month && Array.isArray(parsed?.snapshots)) {
-        history = parsed as TrafficHistory
-      }
-    }
-  } catch {}
-
-  const validSnapshots = history.snapshots
-    .filter(item => item?.date?.startsWith(month) && Number.isFinite(item?.totalGB))
-    .sort((a, b) => a.date.localeCompare(b.date))
-  const latest = validSnapshots[validSnapshots.length - 1]
-
-  // A lower cumulative value means the provider reset or changed its counter.
-  if (latest && totalGB + 0.005 < latest.totalGB) {
-    history.snapshots = []
-  }
-
-  const current = history.snapshots.find(item => item.date === today)
-  if (current) {
-    current.totalGB = totalGB
-    current.updatedAt = now.getTime()
-  } else {
-    history.snapshots.push({ date: today, totalGB, updatedAt: now.getTime() })
-  }
-
-  history.snapshots = history.snapshots
-    .filter(item => item?.date?.startsWith(month) && Number.isFinite(item?.totalGB))
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .slice(-32)
-
-  try {
-    Storage.set(TRAFFIC_HISTORY_KEY, JSON.stringify(history))
-  } catch {}
 }
 
 interface MonthlyBillHistoryItem {
@@ -397,20 +327,10 @@ function currencySymbol(currency?: string): string {
   return `${currency} `
 }
 
-function isBillQueryAvailable(response: any): boolean {
-  if (!response?.Data) return false
-  if (response.Success === false) return false
-  if (response.Code && response.Code !== "Success") return false
-  return true
-}
-
 async function queryBillItemsForCycle(
   config: AppConfig,
   billingCycle: string
 ): Promise<{ available: boolean; items: Array<any> }> {
-  let available = false
-  let items: Array<any> = []
-
   const overviewRes = await aliyunRequest<{
     Data?: {
       Items?: {
@@ -423,35 +343,14 @@ async function queryBillItemsForCycle(
     BillingCycle: billingCycle
   }).catch(() => null)
 
-  if (isBillQueryAvailable(overviewRes)) {
-    available = true
-    items = overviewRes?.Data?.Items?.Item || []
+  if (isBillQueryAvailable(overviewRes) && overviewRes!.Data!.Items!.Item!.length > 0) {
+    return { available: true, items: overviewRes!.Data!.Items!.Item! }
   }
 
-  // QueryBillOverview can be authorized but return no product rows; the
-  // account bill endpoint is a compatible fallback for those accounts.
-  if (items.length === 0) {
-    const billRes = await aliyunRequest<{
-      Data?: {
-        Items?: {
-          Item?: Array<any>
-        }
-      }
-      Success?: boolean
-      Code?: string
-    }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
-      BillingCycle: billingCycle,
-      PageSize: 300,
-      IsGroupByProduct: true
-    }).catch(() => null)
-
-    if (isBillQueryAvailable(billRes)) {
-      available = true
-      items = billRes?.Data?.Items?.Item || []
-    }
-  }
-
-  return { available, items }
+  return queryAccountBillPages(
+    params => aliyunRequest("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, params),
+    { BillingCycle: billingCycle, IsGroupByProduct: true }
+  )
 }
 
 interface BillSummary {
@@ -533,6 +432,7 @@ interface ConsoleData {
   publicIp?: string
   color: string
   updatedAt?: string | Date
+  isCached?: boolean
   financialBalance?: AccountBalanceInfo | null
   financialBill?: MonthlyBillInfo | null
   financialBillStatus: "available" | "unavailable"
@@ -693,17 +593,17 @@ function getInstancePublicIp(instance?: ECSInstanceRecord): string | undefined {
 }
 
 async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
+  const trafficSampledAt = new Date()
   // 1. 查询 CDT 流量
   const cdtData = await aliyunRequest<{
     TrafficDetails?: CDTTrafficDetail[]
   }>("cdt.aliyuncs.com", "ListCdtInternetTraffic", "2021-08-13", config)
+  assertSampleBillingMonth(trafficSampledAt)
 
   const details = cdtData.TrafficDetails || []
   const trafficDiagnostics = buildCDTTrafficDiagnostics(details)
   const totalBytes = details.reduce((sum, item) => sum + trafficBytes(item.Traffic), 0)
   const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
-  const trafficSampledAt = new Date()
-  recordTrafficSnapshot(config, totalGB, trafficSampledAt)
   const thresholdGB = config.trafficThresholdGB
   const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
   const cutoffRemainingGB = Math.max(0, Number((vpsCutoffReferenceGB - totalGB).toFixed(2)))
@@ -777,50 +677,9 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   try {
     const cycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
 
-    // 1. 优先调用 QueryBillOverview（对齐阿里云控制台账单总览，直接按产品汇算）
-    let billItems: Array<{
-      PipCode?: string
-      ProductCode?: string
-      ProductName?: string
-      PaymentAmount?: number
-      PretaxGrossAmount?: number
-      PretaxAmount?: number
-      OutstandingAmount?: number
-      Currency?: string
-    }> = []
-
-    const overviewRes = await aliyunRequest<{
-      Data?: {
-        Items?: {
-          Item?: Array<any>
-        }
-      }
-    }>("business.aliyuncs.com", "QueryBillOverview", "2017-12-14", config, {
-      BillingCycle: cycle
-    }).catch(() => null)
-
-    if (isBillQueryAvailable(overviewRes)) financialBillStatus = "available"
-    if (isBillQueryAvailable(overviewRes) && overviewRes?.Data?.Items?.Item && overviewRes.Data.Items.Item.length > 0) {
-      billItems = overviewRes.Data.Items.Item
-    } else {
-      // 2. 回退调用 QueryAccountBill（带 IsGroupByProduct: true 才能返回产品维度分类）
-      const billRes = await aliyunRequest<{
-        Data?: {
-          Items?: {
-            Item?: Array<any>
-          }
-        }
-      }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
-        BillingCycle: cycle,
-        PageSize: 300,
-        IsGroupByProduct: true
-      }).catch(() => null)
-
-      if (isBillQueryAvailable(billRes)) financialBillStatus = "available"
-      if (isBillQueryAvailable(billRes) && billRes?.Data?.Items?.Item && billRes.Data.Items.Item.length > 0) {
-        billItems = billRes.Data.Items.Item
-      }
-    }
+    const monthResult = await queryBillItemsForCycle(config, cycle)
+    const billItems = monthResult.items
+    financialBillStatus = monthResult.available ? "available" : "unavailable"
 
       const currentSummary = summarizeBillItems(billItems)
       const finalPayment = currentSummary.paymentAmount
@@ -835,40 +694,22 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
       // 仅在账单总览或回退接口已确认可用后，才查询每日产品账单分类。
       const ecsDailyList: DailyExpenseItem[] = []
       const eipDailyList: DailyExpenseItem[] = []
-      const daysCount = Math.min(7, currentDay)
-
-      const dateQueries: Array<{ dateStr: string; displayDate: string; isToday: boolean }> = []
-      for (let i = 0; i < daysCount; i++) {
-        const d = new Date(now.getFullYear(), now.getMonth(), currentDay - i)
-        const yyyy = d.getFullYear()
-        const mm = String(d.getMonth() + 1).padStart(2, "0")
-        const dd = String(d.getDate()).padStart(2, "0")
-        dateQueries.push({
-          dateStr: `${yyyy}-${mm}-${dd}`,
-          displayDate: `${mm}-${dd}`,
-          isToday: i === 0
-        })
-      }
+      const dateQueries = recentBillingDates(now)
 
       try {
         const dailyResults = await Promise.all(
           (canQueryDailyBill ? dateQueries : []).map(async q => {
             try {
-              const dayRes = await aliyunRequest<{
-                Data?: {
-                  Items?: {
-                    Item?: Array<any>
-                  }
+              const dayResult = await queryAccountBillPages(
+                params => aliyunRequest("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, params),
+                {
+                  BillingCycle: q.billingCycle,
+                  Granularity: "DAILY",
+                  BillingDate: q.dateStr,
+                  IsGroupByProduct: true
                 }
-              }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
-                BillingCycle: cycle,
-                Granularity: "DAILY",
-                BillingDate: q.dateStr,
-                PageSize: 300,
-                IsGroupByProduct: true
-              }).catch(() => null)
-
-              const dayItems = dayRes?.Data?.Items?.Item || []
+              )
+              const dayItems = dayResult.items
               let dEcs = 0
               let dEip = 0
               for (const it of dayItems) {
@@ -907,7 +748,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
                 ecsAmount: formatDaily(dEcs),
                 eipAmount: formatDaily(dEip),
                 settled: dayItems.length > 0,
-                available: isBillQueryAvailable(dayRes)
+                available: dayResult.available
               }
             } catch {
               return {
@@ -933,10 +774,11 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
         }
       }
 
-    if (canQueryDailyBill && billItems.length > 0) {
+    if (canQueryDailyBill) {
       financialBill = {
         billingCycle: cycle,
         paymentAmount: finalPayment.toFixed(2),
+        hasRecords: billItems.length > 0,
         paymentScope: currentSummary.paymentScope,
         outstandingAmount: currentSummary.outstandingAmount.toFixed(2),
         currency: currentSummary.currency,
@@ -953,35 +795,9 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   try {
     const previousDate = new Date(now.getFullYear(), now.getMonth() - 1, 1)
     const previousCycle = `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, "0")}`
-    let previousItems: Array<any> = []
-
-    const previousOverview = await aliyunRequest<{
-      Data?: { Items?: { Item?: Array<any> } }
-      Success?: boolean
-      Code?: string
-    }>("business.aliyuncs.com", "QueryBillOverview", "2017-12-14", config, {
-      BillingCycle: previousCycle
-    }).catch(() => null)
-
-    if (isBillQueryAvailable(previousOverview)) previousFinancialBillStatus = "available"
-    if (isBillQueryAvailable(previousOverview) && previousOverview?.Data?.Items?.Item && previousOverview.Data.Items.Item.length > 0) {
-      previousItems = previousOverview.Data.Items.Item
-    } else {
-      const previousBill = await aliyunRequest<{
-        Data?: { Items?: { Item?: Array<any> } }
-        Success?: boolean
-        Code?: string
-      }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
-        BillingCycle: previousCycle,
-        PageSize: 300,
-        IsGroupByProduct: true
-      }).catch(() => null)
-
-      if (isBillQueryAvailable(previousBill)) previousFinancialBillStatus = "available"
-      if (isBillQueryAvailable(previousBill) && previousBill?.Data?.Items?.Item && previousBill.Data.Items.Item.length > 0) {
-        previousItems = previousBill.Data.Items.Item
-      }
-    }
+    const previousResult = await queryBillItemsForCycle(config, previousCycle)
+    const previousItems = previousResult.items
+    previousFinancialBillStatus = previousResult.available ? "available" : "unavailable"
 
     if (previousFinancialBillStatus === "available" && previousItems.length > 0) {
       const summary = summarizeBillItems(previousItems, true)
@@ -1009,7 +825,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
       paymentAmount: financialBill?.paymentAmount || "0.00",
       currency: financialBill?.currency || financialBalance?.currency || "CNY",
       available: financialBillStatus === "available",
-      hasRecords: Boolean(financialBill),
+      hasRecords: Boolean(financialBill) && financialBill?.hasRecords !== false,
       paymentScope: financialBill?.paymentScope
     },
     {
@@ -1245,7 +1061,7 @@ function MonthlyTrafficOverview({
         <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">CDT 互联网出网流量</Text>
         <Spacer />
         <Text font={11} foregroundStyle="secondaryLabel">
-          {loading ? "正在更新" : updated ? `${updated} 更新` : "等待同步"}
+          {loading ? "正在更新" : updated ? `${data?.isCached ? "缓存 · " : ""}${updated}` : "等待同步"}
         </Text>
       </HStack>
       <HStack alignment="lastTextBaseline" spacing={5}>
@@ -2029,12 +1845,22 @@ function SettingsView({
 
 // ==================== 6. 控制台仪表盘主视图 (Apple iOS 26 Liquid Glass System) ====================
 
-function getCachedConsoleSnapshot(): { data: ConsoleData | null; lastUpdated: Date | null } {
+function getCachedConsoleSnapshot(config: AppConfig): { data: ConsoleData | null; lastUpdated: Date | null } {
   try {
     if (typeof Storage !== "undefined" && Storage?.get) {
       const raw = Storage.get(SNAPSHOT_STORAGE_KEY)
       if (raw) {
-        const parsed: ConsoleData = typeof raw === "string" ? JSON.parse(raw) : raw
+        const parsed = readSnapshot<ConsoleData>(raw, config)
+        if (!parsed) return { data: null, lastUpdated: null }
+        const now = new Date()
+        parsed.isCached = true
+        parsed.thresholdGB = config.trafficThresholdGB
+        parsed.vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
+        parsed.cutoffRemainingGB = Math.max(0, Number((parsed.vpsCutoffReferenceGB - parsed.totalGB).toFixed(2)))
+        parsed.remainingGB = Math.max(0, Number((parsed.thresholdGB - parsed.totalGB).toFixed(2)))
+        parsed.percentage = Math.min(100, Number(((parsed.totalGB / parsed.thresholdGB) * 100).toFixed(1)))
+        parsed.daysRemaining = Math.max(1, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1)
+        parsed.dailyBudgetGB = (parsed.remainingGB / parsed.daysRemaining).toFixed(1)
         if (parsed.financialBillStatus !== "available") {
           parsed.financialBillStatus = "unavailable"
         }
@@ -2075,7 +1901,7 @@ function getCachedConsoleSnapshot(): { data: ConsoleData | null; lastUpdated: Da
             if (typeof item.available !== "boolean") item.available = false
           }
         }
-        const ts = parsed.updatedAt ? new Date(parsed.updatedAt) : null
+        const ts = parsed.updatedAt instanceof Date ? parsed.updatedAt : parsed.updatedAt ? new Date(parsed.updatedAt) : null
         return { data: parsed, lastUpdated: ts }
       }
     }
@@ -2086,12 +1912,13 @@ function getCachedConsoleSnapshot(): { data: ConsoleData | null; lastUpdated: Da
 function ConsoleView() {
   const [config, setConfig] = useState<AppConfig>(loadSavedConfig())
   const [showSettings, setShowSettings] = useState(!isConfigReady(config))
-  const initialCache = getCachedConsoleSnapshot()
+  const [refreshGate] = useState(() => createRefreshGate())
+  const initialCache = getCachedConsoleSnapshot(config)
   const [data, setData] = useState<ConsoleData | null>(initialCache.data)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(initialCache.lastUpdated)
   const [loading, setLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [logs, setLogs] = useState<string[]>([])
+  const [logs, setLogs] = useState<Array<{ line: string; financial: boolean }>>([])
   const financialBillPresentation = getMonthlyBillPresentation(data?.financialBill)
   const [isPrivacy, setIsPrivacy] = useState<boolean>(() => {
     try {
@@ -2102,9 +1929,9 @@ function ConsoleView() {
   })
   const [isCopied, setIsCopied] = useState(false)
 
-  const appendLog = (msg: string) => {
+  const appendLog = (msg: string, financial: boolean = false) => {
     const time = new Date().toLocaleTimeString()
-    setLogs(prev => [`[${time}] ${msg}`, ...prev.slice(0, 7)])
+    setLogs(prev => [{ line: `[${time}] ${msg}`, financial }, ...prev.slice(0, 7)])
   }
 
   const togglePrivacy = () => {
@@ -2287,8 +2114,10 @@ function ConsoleView() {
 
   const loadData = useCallback(
     async (cfg: AppConfig = config) => {
+      const generation = refreshGate.start()
       if (!isConfigReady(cfg)) {
         setShowSettings(true)
+        setLoading(false)
         return
       }
       setLoading(true)
@@ -2296,34 +2125,43 @@ function ConsoleView() {
       try {
         appendLog("正在连接阿里云 OpenAPI...")
         const res = await fetchConsoleData(cfg)
+        if (!refreshGate.isCurrent(generation)) return
+        const sampledAt = res.updatedAt instanceof Date ? res.updatedAt : new Date(res.updatedAt || "")
+        assertSampleBillingMonth(sampledAt)
+        recordTrafficSample(cfg, res.totalGB, sampledAt)
+        res.isCached = false
         setData(res)
-        const now = new Date()
-        setLastUpdated(now)
+        setLastUpdated(sampledAt)
         try {
           if (typeof Storage !== "undefined" && Storage?.set) {
-            Storage.set(SNAPSHOT_STORAGE_KEY, JSON.stringify(res))
+            Storage.set(SNAPSHOT_STORAGE_KEY, JSON.stringify(createSnapshot(cfg, res)))
           }
         } catch {}
         appendLog(`CDT流量: ${res.totalGB} GB (${res.percentage}%)`)
         appendLog(`ECS 实例: ${res.ecsStatus} ${res.publicIp ? `(${res.publicIp})` : ""}`)
         if (res.financialBalance) {
-          appendLog(`账户余额: ¥${res.financialBalance.availableCashAmount}`)
+          appendLog(`账户余额: ¥${res.financialBalance.availableCashAmount}`, true)
         }
       } catch (err: any) {
+        if (!refreshGate.isCurrent(generation)) return
         const msg = humanizeAliyunError(err?.message || "网络请求失败，请检查配置")
         setErrorMessage(msg)
+        const cached = getCachedConsoleSnapshot(cfg)
+        setData(cached.data)
+        setLastUpdated(cached.lastUpdated)
         appendLog(`错误: ${msg}`)
       } finally {
-        setLoading(false)
+        if (refreshGate.isCurrent(generation)) setLoading(false)
       }
     },
-    [config]
+    [config, refreshGate]
   )
 
   useEffect(() => {
     if (isConfigReady(config)) {
       loadData(config)
     }
+    return () => refreshGate.invalidate()
   }, [])
 
   // 1. 如果正在打开设置页
@@ -2333,7 +2171,14 @@ function ConsoleView() {
         <SettingsView
           currentConfig={config}
           onSave={newCfg => {
+            refreshGate.invalidate()
+            const cached = getCachedConsoleSnapshot(newCfg)
             setConfig(newCfg)
+            setData(cached.data)
+            setLastUpdated(cached.lastUpdated)
+            setErrorMessage(null)
+            setLogs([])
+            setIsCopied(false)
             setShowSettings(false)
             loadData(newCfg)
           }}
@@ -2375,7 +2220,7 @@ function ConsoleView() {
         ? "rgba(88, 86, 214, 0.12)"
         : "rgba(142, 142, 147, 0.12)"
 
-  const statusLabel = loading && !data
+  const observedStatusLabel = loading && !data
     ? "同步中"
     : data?.ecsStatus === "Running"
       ? "运行中"
@@ -2390,6 +2235,7 @@ function ConsoleView() {
               : errorMessage
                 ? "同步失败"
                 : "等待同步"
+  const statusLabel = data?.isCached ? `${observedStatusLabel}（缓存）` : observedStatusLabel
   const publicIpLabel = loading
     ? "获取中..."
     : errorMessage && !data
@@ -3051,8 +2897,8 @@ function ConsoleView() {
             <ScrollView showsIndicators={false} frame={{ maxWidth: Infinity, height: logViewportHeight }}>
               <VStack alignment="leading" spacing={7} frame={{ maxWidth: Infinity, alignment: "leading" }}>
                 {logs.length > 0 ? (
-                  logs.map((log, index) => {
-                    const parts = splitLogLine(log)
+                  logs.map((entry, index) => {
+                    const parts = splitLogLine(entry.line)
                     return (
                       <HStack key={index} spacing={6} alignment="top" frame={{ maxWidth: Infinity, alignment: "leading" }}>
                         <Text font={11} foregroundStyle="tertiaryLabel">•</Text>
@@ -3061,11 +2907,11 @@ function ConsoleView() {
                         </Text>
                         <Text
                           font={12}
-                          foregroundStyle={logMessageColor(log)}
+                          foregroundStyle={logMessageColor(entry.line)}
                           lineLimit={2}
                           frame={{ maxWidth: Infinity, alignment: "leading" }}
                         >
-                          {parts.message}
+                          {isPrivacy && entry.financial ? "账户余额: ****" : parts.message}
                         </Text>
                       </HStack>
                     )

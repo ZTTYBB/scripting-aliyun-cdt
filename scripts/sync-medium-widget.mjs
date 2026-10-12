@@ -2,9 +2,9 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
 const root = new URL("../", import.meta.url)
-const shared = readFileSync(new URL("medium_widget.tsx", root), "utf8")
+const shared = readFileSync(new URL("medium_widget.tsx", root), "utf8").replace(/\r\n/g, "\n")
 const target = new URL("AliyunCDT_AllInOne.tsx", root)
-const standalone = readFileSync(target, "utf8")
+const standalone = readFileSync(target, "utf8").replace(/\r\n/g, "\n")
 const start = standalone.indexOf("function MediumWidget({")
 const end = standalone.indexOf("function LargeWidget({", start)
 if (start < 0 || end < 0) throw new Error("Standalone widget section not found")
@@ -27,5 +27,11 @@ const section = [
   ""
 ].join("\n")
 
-writeFileSync(target, standalone.slice(0, replacementStart) + section + standalone.slice(end))
-console.log(`Synced medium widget: ${fileURLToPath(target)}`)
+const result = standalone.slice(0, replacementStart) + section + standalone.slice(end)
+if (process.argv.includes("--check")) {
+  if (result !== standalone) throw new Error("Standalone medium widget is out of date")
+  console.log("Standalone medium widget matches medium_widget.tsx")
+} else {
+  writeFileSync(target, result)
+  console.log(`Synced medium widget: ${fileURLToPath(target)}`)
+}

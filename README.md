@@ -32,6 +32,8 @@
 - **📏 两条流量参考线**：默认 200 GB 月用量参考值与 195 GB VPS 熔断参考线均可在设置中修改。它们只用于本机界面计算和提醒，不代表账号完整免费额度余额，不会操作 ECS，也不会同步或校验 VPS 配置。
 - **📱 全尺寸桌面小组件适配**：支持小号（Small）、中号（Medium）、大号（Large）与锁屏（Lock Screen）小组件，自带优雅的 Apple 质感发光环与状态指示。
 
+离线快照只在配置相同、同一自然月且采样未超过 6 小时时使用，并标记为缓存。旧版没有归属信息的快照会被忽略。近 7 日估算缺少任一天样本时显示 `--`，不会把缺测当作零；月首不会直接与上月累计值相减。
+
 ---
 
 ## 📲 使用与配置步骤
@@ -103,3 +105,14 @@
 ## 📄 开源许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
+
+## 本地验证
+
+```powershell
+node scripts/sync-shared-helpers.mjs
+node scripts/sync-medium-widget.mjs
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-package.ps1
+node --test tests/*.test.mjs
+```
+
+生成后的两项同步脚本可加 `--check`，打包脚本可加 `-Check`，检查源码与单文件版、安装包是否一致。测试使用无网络模拟，不读取真实云账户。

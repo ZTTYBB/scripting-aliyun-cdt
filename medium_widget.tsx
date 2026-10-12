@@ -20,6 +20,7 @@ interface MediumWidgetData {
   sevenDayTotalGB: number | null
   dailyUsage: Array<{ date: string; label: string; valueGB: number | null; isToday: boolean }>
   updatedAt: Date | string | number
+  isCached?: boolean
   ecsStatus: string
   color: string
 }
@@ -203,7 +204,9 @@ function MediumWidgetContent({
         <HStack spacing={3} alignment="center">
           <Circle widgetAccentable fill={status.color} frame={{ width: 5, height: 5 }} />
           <Text font={8} lineLimit={1} foregroundStyle={status.color}>{status.label}</Text>
-          <Text font={8} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">{mediumUpdateTime(data.updatedAt)}</Text>
+          <Text font={8} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+            {data.isCached ? "缓存 · " : ""}{mediumUpdateTime(data.updatedAt)}
+          </Text>
         </HStack>
       </HStack>
 

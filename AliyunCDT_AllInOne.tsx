@@ -36,6 +36,485 @@ import {
   useCallback
 } from "scripting"
 
+// BEGIN SHARED MONITOR RUNTIME: generated from monitor_runtime.ts
+interface ConfigIdentityCfg {
+  accessKeyId: string
+  accessKeySecret: string
+  regionId: string
+  ecsInstanceId: string
+  trafficThresholdGB: number
+  vpsCutoffReferenceGB: number
+  resetDayOfMonth: number
+}
+
+interface DailyUsagePoint {
+  date: string
+  label: string
+  valueGB: number | null
+  isToday: boolean
+}
+
+interface MonitorSnapshot<T> {
+  version: 2
+  scope: string
+  billingMonth: string
+  sampledAt: number
+  data: T
+}
+
+interface RuntimeTrafficSample {
+  date: string
+  totalGB: number
+  updatedAt: number
+}
+
+interface RuntimeTrafficHistory {
+  version: 2
+  scope: string
+  snapshots: RuntimeTrafficSample[]
+}
+
+const RUNTIME_SNAPSHOT_TTL_MS = 6 * 60 * 60 * 1000
+const RUNTIME_LEGACY_HISTORY_KEY = "aliyun_cdt_daily_history_v1"
+const RUNTIME_HISTORY_KEY = "aliyun_cdt_daily_history_v2_"
+
+function runtimeDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+}
+
+function runtimeOffsetDate(date: Date, offset: number): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset)
+}
+
+function runtimeRecord(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function runtimeTimestamp(value: unknown): number | null {
+  if (value instanceof Date || Object.prototype.toString.call(value) === "[object Date]") {
+    const time = (value as Date).getTime()
+    return Number.isFinite(time) ? time : null
+  }
+  if (typeof value !== "number" && typeof value !== "string") return null
+  if (typeof value === "string" && !value.trim()) return null
+  const timestamp = new Date(value).getTime()
+  return Number.isFinite(timestamp) ? timestamp : null
+}
+
+function runtimeParse(value: unknown): unknown {
+  try {
+    return typeof value === "string" ? JSON.parse(value) : value
+  } catch {
+    return null
+  }
+}
+
+// A 128-bit non-cryptographic identifier; this is not encryption or authentication.
+function runtimeFingerprint(source: string): string {
+  let a = 1779033703
+  let b = 3144134277
+  let c = 1013904242
+  let d = 2773480762
+  for (let i = 0; i < source.length; i++) {
+    const character = source.charCodeAt(i)
+    a = b ^ Math.imul(a ^ character, 597399067)
+    b = c ^ Math.imul(b ^ character, 2869860233)
+    c = d ^ Math.imul(c ^ character, 951274213)
+    d = a ^ Math.imul(d ^ character, 2716044179)
+  }
+  a = Math.imul(c ^ (a >>> 18), 597399067)
+  b = Math.imul(d ^ (b >>> 22), 2869860233)
+  c = Math.imul(a ^ (c >>> 17), 951274213)
+  d = Math.imul(b ^ (d >>> 19), 2716044179)
+  return [(a ^ b ^ c ^ d) >>> 0, (b ^ a) >>> 0, (c ^ a) >>> 0, (d ^ a) >>> 0]
+    .map(value => value.toString(16).padStart(8, "0"))
+    .join("")
+}
+
+function configScope(config: ConfigIdentityCfg): string {
+  return runtimeFingerprint(JSON.stringify([
+    config.accessKeyId.trim(),
+    config.accessKeySecret.trim(),
+    config.regionId.trim(),
+    config.ecsInstanceId.trim(),
+    config.trafficThresholdGB,
+    config.vpsCutoffReferenceGB,
+    config.resetDayOfMonth
+  ]))
+}
+
+function accountHistoryScope(config: ConfigIdentityCfg): string {
+  return runtimeFingerprint(JSON.stringify([config.accessKeyId.trim(), "cdt"]))
+}
+
+async function withRequestTimeout<T>(
+  operation: (signal?: any) => Promise<T>,
+  action: string,
+  timeoutMs = 12000
+): Promise<T> {
+  const Controller = (globalThis as any).AbortController
+  const controller = typeof Controller === "function" ? new Controller() : undefined
+  const delay = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 12000
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`Aliyun [${action}] request timed out (${delay} ms)`))
+      try {
+        controller?.abort()
+      } catch {}
+    }, delay)
+  })
+  try {
+    // The operation includes body parsing, not just receiving HTTP headers.
+    return await Promise.race([Promise.resolve().then(() => operation(controller?.signal)), deadline])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+function createSnapshot<T extends { totalGB: number; updatedAt?: unknown }>(
+  config: ConfigIdentityCfg,
+  data: T,
+  now: Date = new Date()
+): MonitorSnapshot<T> {
+  const sampledAt = runtimeTimestamp(data.updatedAt)
+  if (
+    sampledAt === null || !Number.isFinite(now.getTime()) || sampledAt > now.getTime() ||
+    !Number.isFinite(data.totalGB) || data.totalGB < 0
+  ) {
+    throw new Error("Cannot cache an invalid traffic sample")
+  }
+  return {
+    version: 2,
+    scope: configScope(config),
+    billingMonth: runtimeDateKey(new Date(sampledAt)).slice(0, 7),
+    sampledAt,
+    data
+  }
+}
+
+function readSnapshot<T = any>(
+  raw: unknown,
+  config: ConfigIdentityCfg,
+  now: Date = new Date()
+): T | null {
+  const parsed = runtimeParse(raw)
+  if (!runtimeRecord(parsed) || !runtimeRecord(parsed.data)) return null
+  const time = now.getTime()
+  const sampledAt = parsed.sampledAt
+  const updatedAt = runtimeTimestamp(parsed.data.updatedAt)
+  if (
+    parsed.version !== 2 || parsed.scope !== configScope(config) ||
+    typeof sampledAt !== "number" || !Number.isFinite(sampledAt) || !Number.isFinite(time) ||
+    sampledAt > time || time - sampledAt > RUNTIME_SNAPSHOT_TTL_MS ||
+    updatedAt !== sampledAt ||
+    parsed.billingMonth !== runtimeDateKey(now).slice(0, 7) ||
+    parsed.billingMonth !== runtimeDateKey(new Date(sampledAt)).slice(0, 7) ||
+    typeof parsed.data.totalGB !== "number" || !Number.isFinite(parsed.data.totalGB) || parsed.data.totalGB < 0
+  ) {
+    return null
+  }
+  return { ...parsed.data, updatedAt: new Date(sampledAt) } as T
+}
+
+function createRefreshGate() {
+  let generation = 0
+  return {
+    start(): number {
+      return ++generation
+    },
+    invalidate(): void {
+      generation++
+    },
+    isCurrent(token: number): boolean {
+      return token === generation
+    }
+  }
+}
+
+function assertSampleBillingMonth(sampledAt: Date, now: Date = new Date()): void {
+  if (
+    !Number.isFinite(sampledAt.getTime()) || !Number.isFinite(now.getTime()) ||
+    sampledAt.getFullYear() !== now.getFullYear() || sampledAt.getMonth() !== now.getMonth()
+  ) {
+    throw new Error("Billing month changed; refresh required")
+  }
+}
+
+function runtimeStorage(): any {
+  return (globalThis as any).Storage
+}
+
+function runtimeLegacyScope(config: ConfigIdentityCfg): string {
+  const source = `${config.accessKeyId.trim()}|cdt`
+  let hash = 2166136261
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+function runtimeValidSamples(samples: unknown, now: Date, includeLaterSamples: boolean): RuntimeTrafficSample[] {
+  if (!Array.isArray(samples)) return []
+  const earliest = runtimeDateKey(runtimeOffsetDate(now, -31))
+  const today = runtimeDateKey(now)
+  const byDate = new Map<string, RuntimeTrafficSample>()
+  for (const item of samples) {
+    if (
+      !runtimeRecord(item) || typeof item.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(item.date) ||
+      item.date < earliest || (!includeLaterSamples && item.date > today) ||
+      typeof item.totalGB !== "number" || !Number.isFinite(item.totalGB) || item.totalGB < 0 ||
+      typeof item.updatedAt !== "number" || !Number.isFinite(item.updatedAt) ||
+      (!includeLaterSamples && item.updatedAt > now.getTime()) ||
+      runtimeDateKey(new Date(item.updatedAt)) !== item.date
+    ) continue
+    const prior = byDate.get(item.date)
+    if (!prior || item.updatedAt > prior.updatedAt) {
+      byDate.set(item.date, { date: item.date, totalGB: item.totalGB, updatedAt: item.updatedAt })
+    }
+  }
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-32)
+}
+
+function runtimeLoadHistory(
+  config: ConfigIdentityCfg,
+  now: Date,
+  includeLaterSamples = false
+): RuntimeTrafficHistory {
+  const scope = accountHistoryScope(config)
+  const empty: RuntimeTrafficHistory = { version: 2, scope, snapshots: [] }
+  try {
+    const storage = runtimeStorage()
+    const raw = storage?.get?.(RUNTIME_HISTORY_KEY + scope)
+    if (raw) {
+      const parsed = runtimeParse(raw)
+      if (!runtimeRecord(parsed) || parsed.version !== 2 || parsed.scope !== scope) return empty
+      return { ...empty, snapshots: runtimeValidSamples(parsed.snapshots, now, includeLaterSamples) }
+    }
+    const legacy = runtimeParse(storage?.get?.(RUNTIME_LEGACY_HISTORY_KEY))
+    if (
+      runtimeRecord(legacy) && legacy.version === 1 && legacy.scope === runtimeLegacyScope(config) &&
+      typeof legacy.month === "string" && /^\d{4}-\d{2}$/.test(legacy.month) && Array.isArray(legacy.snapshots)
+    ) {
+      const snapshots = runtimeValidSamples(
+        legacy.snapshots.filter(item => runtimeRecord(item) && typeof item.date === "string" && item.date.slice(0, 7) === legacy.month),
+        now,
+        includeLaterSamples
+      )
+      return { ...empty, snapshots }
+    }
+  } catch {}
+  return empty
+}
+
+function runtimeBuildDailyUsage(snapshots: RuntimeTrafficSample[], now: Date): DailyUsagePoint[] {
+  const byDate = new Map(snapshots.map(item => [item.date, item]))
+  const weekdayLabels = ["\u65e5", "\u4e00", "\u4e8c", "\u4e09", "\u56db", "\u4e94", "\u516d"]
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = runtimeOffsetDate(now, index - 6)
+    const key = runtimeDateKey(date)
+    const previousKey = runtimeDateKey(runtimeOffsetDate(date, -1))
+    const current = byDate.get(key)
+    const previous = byDate.get(previousKey)
+    let valueGB: number | null = null
+    if (
+      current && previous && key.slice(0, 7) === previousKey.slice(0, 7) &&
+      current.updatedAt > previous.updatedAt && current.totalGB + 0.005 >= previous.totalGB
+    ) {
+      valueGB = Math.max(0, Number((current.totalGB - previous.totalGB).toFixed(2)))
+    }
+    return { date: key, label: index === 6 ? "\u4eca" : weekdayLabels[date.getDay()], valueGB, isToday: index === 6 }
+  })
+}
+
+function recordTrafficSample(
+  config: ConfigIdentityCfg,
+  totalGB: number,
+  now: Date = new Date()
+): DailyUsagePoint[] {
+  const history = runtimeLoadHistory(config, now, true)
+  const updatedAt = now.getTime()
+  const latest = history.snapshots[history.snapshots.length - 1]
+  if (
+    !Number.isFinite(updatedAt) || !Number.isFinite(totalGB) || totalGB < 0 ||
+    (latest && latest.updatedAt >= updatedAt)
+  ) {
+    return runtimeBuildDailyUsage(runtimeValidSamples(history.snapshots, now, false), now)
+  }
+  const date = runtimeDateKey(now)
+  const month = date.slice(0, 7)
+  // Only discard the current billing month's baseline when its counter decreases.
+  if (latest?.date.slice(0, 7) === month && totalGB + 0.005 < latest.totalGB) {
+    history.snapshots = history.snapshots.filter(item => item.date.slice(0, 7) !== month)
+  }
+  history.snapshots = history.snapshots.filter(item => item.date !== date)
+  history.snapshots.push({ date, totalGB, updatedAt })
+  history.snapshots = runtimeValidSamples(history.snapshots, now, false)
+  try {
+    runtimeStorage()?.set?.(RUNTIME_HISTORY_KEY + history.scope, JSON.stringify(history))
+  } catch {}
+  return runtimeBuildDailyUsage(history.snapshots, now)
+}
+
+function readDailyUsage(config: ConfigIdentityCfg, now: Date = new Date()): DailyUsagePoint[] {
+  return runtimeBuildDailyUsage(runtimeLoadHistory(config, now).snapshots, now)
+}
+
+function sumCompleteSevenDays(points: DailyUsagePoint[]): number | null {
+  if (points.length !== 7 || points.some(point => point.valueGB === null || !Number.isFinite(point.valueGB) || point.valueGB < 0)) {
+    return null
+  }
+  return Number(points.reduce((sum, point) => sum + point.valueGB!, 0).toFixed(2))
+}
+// END SHARED MONITOR RUNTIME
+
+// BEGIN SHARED BILL QUERIES: generated from bill_queries.ts
+type BillQueryParams = Record<string, string | number | boolean>
+
+interface AccountBillQueryResult {
+  available: boolean
+  items: any[]
+}
+
+interface AccountBillQueryOptions {
+  pageSize?: number
+  maxPages?: number
+  timeoutMs?: number
+}
+
+function isBillQueryAvailable(response: any): boolean {
+  return response !== null
+    && typeof response === "object"
+    && response.Success !== false
+    && (response.Code === undefined || response.Code === "Success")
+    && Array.isArray(response.Data?.Items?.Item)
+}
+
+function pageInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" && typeof value !== "string") return undefined
+  if (typeof value === "string" && !/^\d+$/.test(value.trim())) return undefined
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined
+}
+
+function stableRecord(value: any): any {
+  if (Array.isArray(value)) return value.map(stableRecord)
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map(key => [key, stableRecord(value[key])])
+    )
+  }
+  return value
+}
+
+async function queryAccountBillPages(
+  request: (params: BillQueryParams) => Promise<any>,
+  params: BillQueryParams,
+  options: AccountBillQueryOptions = {}
+): Promise<AccountBillQueryResult> {
+  const unavailable = (): AccountBillQueryResult => ({ available: false, items: [] })
+  const pageSize = options.pageSize ?? pageInteger(params.PageSize) ?? 300
+  const maxPages = options.maxPages ?? 100
+  const timeoutMs = options.timeoutMs ?? 12000
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 300
+    || !Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 100
+    || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return unavailable()
+  }
+
+  let expired = false
+  const deadline = Date.now() + timeoutMs
+  const collect = async (): Promise<AccountBillQueryResult> => {
+    const items: any[] = []
+    const seenPages = new Set<string>()
+    let totalCount: number | undefined
+    for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+      if (expired || Date.now() >= deadline) return unavailable()
+      const response = await request({ ...params, PageSize: pageSize, PageNum: pageNum })
+      if (expired || Date.now() >= deadline || !isBillQueryAvailable(response)) {
+        return unavailable()
+      }
+      const pageItems = response.Data.Items.Item as any[]
+      if (pageItems.length > pageSize) return unavailable()
+      const rawPageNum = response.Data.PageNum
+      if (rawPageNum !== undefined && pageInteger(rawPageNum) !== pageNum) {
+        return unavailable()
+      }
+      const rawPageSize = response.Data.PageSize
+      if (rawPageSize !== undefined && pageInteger(rawPageSize) !== pageSize) {
+        return unavailable()
+      }
+      const rawTotal = response.Data.TotalCount !== undefined
+        ? response.Data.TotalCount
+        : response.TotalCount
+      if (rawTotal !== undefined) {
+        const reportedTotal = pageInteger(rawTotal)
+        if (reportedTotal === undefined
+          || reportedTotal > pageSize * maxPages
+          || (totalCount !== undefined && totalCount !== reportedTotal)) {
+          return unavailable()
+        }
+        totalCount = reportedTotal
+      }
+      if (pageItems.length > 0) {
+        const fingerprint = JSON.stringify(pageItems.map(item => JSON.stringify(stableRecord(item))).sort())
+        if (seenPages.has(fingerprint)) return unavailable()
+        seenPages.add(fingerprint)
+        items.push(...pageItems)
+      }
+
+      if (totalCount !== undefined) {
+        if (items.length > totalCount) return unavailable()
+        if (items.length === totalCount) return { available: true, items }
+        if (pageItems.length === 0) return unavailable()
+      } else if (pageItems.length < pageSize) {
+        return { available: true, items }
+      }
+    }
+    return unavailable()
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      collect().catch(unavailable),
+      new Promise<AccountBillQueryResult>(resolve => {
+        timer = setTimeout(() => {
+          expired = true
+          resolve(unavailable())
+        }, timeoutMs)
+      })
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+interface RecentBillingDate {
+  dateStr: string
+  displayDate: string
+  isToday: boolean
+  billingCycle: string
+}
+
+function recentBillingDates(now: Date, count: number = 7): RecentBillingDate[] {
+  if (!Number.isFinite(now.getTime()) || !Number.isSafeInteger(count) || count < 1) return []
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - index)
+    const year = String(date.getFullYear()).padStart(4, "0")
+    const month = String(date.getMonth() + 1).padStart(2, "0")
+    const day = String(date.getDate()).padStart(2, "0")
+    return {
+      dateStr: `${year}-${month}-${day}`,
+      displayDate: `${month}-${day}`,
+      isToday: index === 0,
+      billingCycle: `${year}-${month}`
+    }
+  })
+}
+// END SHARED BILL QUERIES
+
 // ==================== 1. 本地存储配置管理 ====================
 
 const APP_VERSION = "1.6.5"
@@ -51,7 +530,6 @@ interface AppConfig {
 }
 
 const STORAGE_KEY = "aliyun_cdt_monitor_config"
-const TRAFFIC_HISTORY_KEY = "aliyun_cdt_daily_history_v1"
 
 const DEFAULT_CONFIG: AppConfig = {
   accessKeyId: "",
@@ -244,18 +722,19 @@ async function aliyunRequest<T = any>(
   const requestUrl = `https://${domain}/`
   const bodyString = `${canonicalizedQueryString}&Signature=${percentEncode(signature)}`
 
-  const response = await fetch(requestUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: bodyString
-  })
-
-  if (!response.ok) {
-    const err = await response.text()
-    throw new Error(`Aliyun [${action}] 错误 (${response.status}): ${err}`)
-  }
-
-  return (await response.json()) as T
+  return withRequestTimeout(async signal => {
+    const response = await fetch(requestUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: bodyString,
+      ...(signal ? { signal } : {})
+    })
+    if (!response.ok) {
+      const err = await response.text()
+      throw new Error(`Aliyun [${action}] 错误 (${response.status}): ${err}`)
+    }
+    return (await response.json()) as T
+  }, action)
 }
 
 // ==================== 3. 业务数据模型 ====================
@@ -278,6 +757,7 @@ export interface DailyExpenseItem {
 export interface MonthlyBillInfo {
   billingCycle: string
   paymentAmount: string
+  hasRecords?: boolean
   // Optional so snapshots saved before this metadata was introduced still render safely.
   paymentScope?: "monitoredProducts" | "allProducts"
   outstandingAmount: string
@@ -323,6 +803,7 @@ interface MonitorData {
   sevenDayTotalGB: number | null
   todayEstimatedGB: number | null
   updatedAt: Date
+  isCached?: boolean
   ecsStatus: "Running" | "Stopped" | "Starting" | "Stopping" | "Unknown"
   publicIp?: string
   color: string
@@ -332,6 +813,7 @@ interface MonitorData {
 }
 
 const SNAPSHOT_STORAGE_KEY = "aliyun_cdt_dashboard_cache"
+const WIDGET_SNAPSHOT_STORAGE_KEY = "aliyun_cdt_widget_cache"
 const PRIVACY_STORAGE_KEY = "aliyun_cdt_privacy_mode"
 
 type ECSIpValue = string | string[] | undefined
@@ -369,10 +851,33 @@ function getInstancePublicIp(instance?: ECSInstanceRecord): string | undefined {
     || firstIp(instance?.PublicIpAddresses)
 }
 
-async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
-  const cdtData = await aliyunRequest<{
-    TrafficDetails?: Array<{ Traffic?: number }>
-  }>("cdt.aliyuncs.com", "ListCdtInternetTraffic", "2021-08-13", config)
+async function queryBillItemsForCycle(config: AppConfig, billingCycle: string): Promise<{ available: boolean; items: any[] }> {
+  const overview = await aliyunRequest(
+    "business.aliyuncs.com", "QueryBillOverview", "2017-12-14", config, { BillingCycle: billingCycle }
+  ).catch(() => null)
+  if (isBillQueryAvailable(overview) && overview.Data.Items.Item.length > 0) {
+    return { available: true, items: overview.Data.Items.Item }
+  }
+  return queryAccountBillPages(
+    params => aliyunRequest("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, params),
+    { BillingCycle: billingCycle, IsGroupByProduct: true }
+  )
+}
+
+async function fetchMonitorData(config: AppConfig, includeFinancial: boolean = true): Promise<MonitorData> {
+  const now = new Date()
+  const [cdtData, ecsData] = await Promise.all([
+    aliyunRequest<{ TrafficDetails?: Array<{ Traffic?: number }> }>(
+      "cdt.aliyuncs.com", "ListCdtInternetTraffic", "2021-08-13", config
+    ),
+    aliyunRequest<{ Instances?: { Instance?: ECSInstanceRecord[] } }>(
+      `ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
+        InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
+        RegionId: config.regionId.trim()
+      }
+    ).catch(() => null)
+  ])
+  assertSampleBillingMonth(now)
 
   const details = cdtData.TrafficDetails || []
   const totalBytes = details.reduce((sum, item) => sum + (item.Traffic || 0), 0)
@@ -383,38 +888,20 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
   const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
 
   // 查询 ECS 状态；失败时仍保留已成功获取的 CDT 用量。
-  let ecsStatus: MonitorData["ecsStatus"] = "Unknown"
-  let publicIp: string | undefined
-  try {
-    const ecsData = await aliyunRequest<{
-      Instances?: {
-        Instance?: ECSInstanceRecord[]
-      }
-    }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
-      InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
-      RegionId: config.regionId.trim()
-    })
-
-    const instance = ecsData.Instances?.Instance?.[0]
-    ecsStatus = (instance?.Status as MonitorData["ecsStatus"]) || "Unknown"
-    publicIp = getInstancePublicIp(instance)
-  } catch {}
+  const instance = ecsData?.Instances?.Instance?.[0]
+  const ecsStatus = (instance?.Status as MonitorData["ecsStatus"]) || "Unknown"
+  const publicIp = getInstancePublicIp(instance)
 
   // 纯统计模式：手机端仅只读拉取用量与账单，关机熔断由 VPS 独立守护
 
-  const now = new Date()
   const currentDay = now.getDate()
   const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
   const daysRemaining = Math.max(1, lastDay - currentDay + 1)
   const dailyBudgetGB = (remainingGB / daysRemaining).toFixed(2)
   const monthTimeProgress = Math.min(100, Math.max(1, Number(((currentDay / lastDay) * 100).toFixed(1))))
-  const dailyUsage = buildDailyUsage(config, totalGB, now)
-  const knownDailyValues = dailyUsage
-    .map(item => item.valueGB)
-    .filter((value): value is number => value !== null)
-  const sevenDayTotalGB = knownDailyValues.length > 0
-    ? Number(knownDailyValues.reduce((sum, value) => sum + value, 0).toFixed(2))
-    : null
+  // Sampling is committed only after the caller accepts its request generation.
+  const dailyUsage = readDailyUsage(config, now)
+  const sevenDayTotalGB = sumCompleteSevenDays(dailyUsage)
   const todayEstimatedGB = dailyUsage[dailyUsage.length - 1]?.valueGB ?? null
 
   // 5. 资产与消费查询 (优雅降级，未授权时不中断主流程)
@@ -422,6 +909,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
   let financialBill: MonthlyBillInfo | null = null
   let financialBillStatus: "available" | "unavailable" = "unavailable"
 
+  if (includeFinancial) {
   try {
     const balRes = await aliyunRequest<{
       Data?: {
@@ -453,50 +941,9 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
   try {
     const cycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
 
-    // 1. 优先调用 QueryBillOverview（对齐阿里云控制台账单总览，直接按产品汇算）
-    let billItems: Array<{
-      PipCode?: string
-      ProductCode?: string
-      ProductName?: string
-      PaymentAmount?: number
-      PretaxGrossAmount?: number
-      PretaxAmount?: number | string | null
-      OutstandingAmount?: number
-      Currency?: string
-    }> = []
-
-    const overviewRes = await aliyunRequest<{
-      Data?: {
-        Items?: {
-          Item?: Array<any>
-        }
-      }
-    }>("business.aliyuncs.com", "QueryBillOverview", "2017-12-14", config, {
-      BillingCycle: cycle
-    }).catch(() => null)
-
-    if (overviewRes?.Data) financialBillStatus = "available"
-    if (overviewRes?.Data?.Items?.Item && overviewRes.Data.Items.Item.length > 0) {
-      billItems = overviewRes.Data.Items.Item
-    } else {
-      // 2. 回退调用 QueryAccountBill（带 IsGroupByProduct: true 才能返回产品维度分类）
-      const billRes = await aliyunRequest<{
-        Data?: {
-          Items?: {
-            Item?: Array<any>
-          }
-        }
-      }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
-        BillingCycle: cycle,
-        PageSize: 300,
-        IsGroupByProduct: true
-      }).catch(() => null)
-
-      if (billRes?.Data) financialBillStatus = "available"
-      if (billRes?.Data?.Items?.Item && billRes.Data.Items.Item.length > 0) {
-        billItems = billRes.Data.Items.Item
-      }
-    }
+    const monthResult = await queryBillItemsForCycle(config, cycle)
+    const billItems = monthResult.items
+    financialBillStatus = monthResult.available ? "available" : "unavailable"
 
     if (financialBillStatus === "available") {
       let allProductsEffective = 0
@@ -556,40 +1003,22 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
       // QueryAccountBill returns daily product-category totals that may lag and are provisional for the current month.
       const ecsDailyList: DailyExpenseItem[] = []
       const eipDailyList: DailyExpenseItem[] = []
-      const daysCount = Math.min(7, currentDay)
-
-      const dateQueries: Array<{ dateStr: string; displayDate: string; isToday: boolean }> = []
-      for (let i = 0; i < daysCount; i++) {
-        const d = new Date(now.getFullYear(), now.getMonth(), currentDay - i)
-        const yyyy = d.getFullYear()
-        const mm = String(d.getMonth() + 1).padStart(2, "0")
-        const dd = String(d.getDate()).padStart(2, "0")
-        dateQueries.push({
-          dateStr: `${yyyy}-${mm}-${dd}`,
-          displayDate: `${mm}-${dd}`,
-          isToday: i === 0
-        })
-      }
+      const dateQueries = recentBillingDates(now)
 
       try {
         const dailyResults = await Promise.all(
           dateQueries.map(async q => {
             try {
-              const dayRes = await aliyunRequest<{
-                Data?: {
-                  Items?: {
-                    Item?: Array<any>
-                  }
+              const dayResult = await queryAccountBillPages(
+                params => aliyunRequest("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, params),
+                {
+                  BillingCycle: q.billingCycle,
+                  Granularity: "DAILY",
+                  BillingDate: q.dateStr,
+                  IsGroupByProduct: true
                 }
-              }>("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, {
-                BillingCycle: cycle,
-                Granularity: "DAILY",
-                BillingDate: q.dateStr,
-                PageSize: 300,
-                IsGroupByProduct: true
-              }).catch(() => null)
-
-              const dayItems = dayRes?.Data?.Items?.Item || []
+              )
+              const dayItems = dayResult.items
               let dEcs = 0
               let dEip = 0
               for (const it of dayItems) {
@@ -628,7 +1057,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
                 ecsAmount: formatDaily(dEcs),
                 eipAmount: formatDaily(dEip),
                 settled: dayItems.length > 0,
-                available: Boolean(dayRes?.Data)
+                available: dayResult.available
               }
             } catch {
               return {
@@ -657,6 +1086,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
       financialBill = {
         billingCycle: cycle,
         paymentAmount: finalPayment.toFixed(2),
+        hasRecords: billItems.length > 0,
         paymentScope: hasInfrastructureItems ? "monitoredProducts" : "allProducts",
         outstandingAmount: outstanding.toFixed(2),
         currency,
@@ -669,6 +1099,7 @@ async function fetchMonitorData(config: AppConfig): Promise<MonitorData> {
     }
   } catch {
     financialBillStatus = "unavailable"
+  }
   }
 
   const color = totalGB >= vpsCutoffReferenceGB
@@ -743,118 +1174,6 @@ type ECSStatusMeta = {
   label: string
   shortLabel: string
   color: string
-}
-
-interface TrafficSnapshot {
-  date: string
-  totalGB: number
-  updatedAt: number
-}
-
-interface TrafficHistory {
-  version: 1
-  scope: string
-  month: string
-  snapshots: TrafficSnapshot[]
-}
-
-interface DailyUsagePoint {
-  date: string
-  label: string
-  valueGB: number | null
-  isToday: boolean
-}
-
-function localDateKey(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, "0")
-  const day = String(date.getDate()).padStart(2, "0")
-  return `${year}-${month}-${day}`
-}
-
-function offsetDate(date: Date, dayOffset: number): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + dayOffset)
-}
-
-function historyScope(config: AppConfig): string {
-  const source = `${config.accessKeyId.trim()}|cdt`
-  let hash = 2166136261
-  for (let i = 0; i < source.length; i++) {
-    hash ^= source.charCodeAt(i)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(36)
-}
-
-function loadTrafficHistory(): TrafficHistory | null {
-  try {
-    const saved = Storage.get(TRAFFIC_HISTORY_KEY)
-    if (!saved) return null
-    const parsed = typeof saved === "string" ? JSON.parse(saved) : saved
-    if (parsed?.version !== 1 || !Array.isArray(parsed?.snapshots)) return null
-    return parsed as TrafficHistory
-  } catch (error) {
-    console.error("读取流量历史失败:", error)
-    return null
-  }
-}
-
-function buildDailyUsage(config: AppConfig, totalGB: number, now: Date): DailyUsagePoint[] {
-  const today = localDateKey(now)
-  const month = today.slice(0, 7)
-  const scope = historyScope(config)
-  let history = loadTrafficHistory()
-
-  if (history?.scope !== scope || history?.month !== month) {
-    history = { version: 1, scope, month, snapshots: [] }
-  }
-
-  const snapshots = history.snapshots
-    .filter(item => item?.date?.startsWith(month) && Number.isFinite(item?.totalGB))
-    .sort((a, b) => a.date.localeCompare(b.date))
-  const latestSnapshot = snapshots[snapshots.length - 1]
-
-  if (latestSnapshot && totalGB + 0.005 < latestSnapshot.totalGB) {
-    snapshots.length = 0
-  }
-
-  const todaySnapshot = snapshots.find(item => item.date === today)
-  if (todaySnapshot) {
-    todaySnapshot.totalGB = totalGB
-    todaySnapshot.updatedAt = now.getTime()
-  } else {
-    snapshots.push({ date: today, totalGB, updatedAt: now.getTime() })
-  }
-
-  history.snapshots = snapshots.slice(-32)
-  try {
-    Storage.set(TRAFFIC_HISTORY_KEY, JSON.stringify(history))
-  } catch (error) {
-    console.error("保存流量历史失败:", error)
-  }
-
-  const byDate = new Map(history.snapshots.map(item => [item.date, item]))
-  const weekdayLabels = ["日", "一", "二", "三", "四", "五", "六"]
-
-  return Array.from({ length: 7 }, (_, index) => {
-    const date = offsetDate(now, index - 6)
-    const dateKey = localDateKey(date)
-    const previousKey = localDateKey(offsetDate(date, -1))
-    const current = byDate.get(dateKey)
-    const previous = byDate.get(previousKey)
-    let valueGB: number | null = null
-
-    if (current && previous && current.totalGB + 0.005 >= previous.totalGB) {
-      valueGB = Math.max(0, Number((current.totalGB - previous.totalGB).toFixed(2)))
-    }
-
-    return {
-      date: dateKey,
-      label: index === 6 ? "今" : weekdayLabels[date.getDay()],
-      valueGB,
-      isToday: index === 6
-    }
-  })
 }
 
 function getECSStatusMeta(status: MonitorData["ecsStatus"]): ECSStatusMeta {
@@ -1082,7 +1401,7 @@ function SmallWidget({ data }: { data: MonitorData }) {
         <HStack spacing={4} alignment="center">
           <Circle widgetAccentable fill={status.color} frame={{ width: 6, height: 6 }} />
           <Text font="caption2" bold lineLimit={1} foregroundStyle={status.color}>
-            {status.shortLabel}
+            {data.isCached ? "缓存" : status.shortLabel}
           </Text>
         </HStack>
       </HStack>
@@ -1137,6 +1456,7 @@ interface MediumWidgetData {
   sevenDayTotalGB: number | null
   dailyUsage: Array<{ date: string; label: string; valueGB: number | null; isToday: boolean }>
   updatedAt: Date | string | number
+  isCached?: boolean
   ecsStatus: string
   color: string
 }
@@ -1320,7 +1640,9 @@ function MediumWidgetContent({
         <HStack spacing={3} alignment="center">
           <Circle widgetAccentable fill={status.color} frame={{ width: 5, height: 5 }} />
           <Text font={8} lineLimit={1} foregroundStyle={status.color}>{status.label}</Text>
-          <Text font={8} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">{mediumUpdateTime(data.updatedAt)}</Text>
+          <Text font={8} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+            {data.isCached ? "缓存 · " : ""}{mediumUpdateTime(data.updatedAt)}
+          </Text>
         </HStack>
       </HStack>
 
@@ -1496,7 +1818,7 @@ function LargeWidget({ data }: { data: MonitorData }) {
         </HStack>
         <Spacer />
         <Text font={9} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
-          {formatUpdateTime(data.updatedAt)} 更新
+          {data.isCached ? "缓存 · " : ""}{formatUpdateTime(data.updatedAt)}
         </Text>
       </HStack>
     </VStack>
@@ -1529,7 +1851,7 @@ function AccessoryRectangularWidget({ data }: { data: MonitorData }) {
           <HStack spacing={4} alignment="center">
             <Circle widgetAccentable fill={status.color} frame={{ width: 5, height: 5 }} />
             <Text font={9} bold lineLimit={1} foregroundStyle={status.color}>
-              {status.shortLabel}
+              {data.isCached ? "缓存" : status.shortLabel}
             </Text>
           </HStack>
         </HStack>
@@ -1546,7 +1868,7 @@ function AccessoryInlineWidget({ data }: { data: MonitorData }) {
 
   return (
     <Text lineLimit={1} monospacedDigit>
-      CDT {data.totalGB.toFixed(2)}/{data.thresholdGB}G · {status.shortLabel}
+      CDT {data.totalGB.toFixed(2)}/{data.thresholdGB}G · {data.isCached ? "缓存" : status.shortLabel}
     </Text>
   )
 }
@@ -1563,7 +1885,7 @@ function AccessoryCircularWidget({ data }: { data: MonitorData }) {
         size={50}
         lineWidth={5}
         value={`${Math.round(data.percentage)}%`}
-        caption="CDT"
+        caption={data.isCached ? "缓存" : "CDT"}
         valueFont={11}
         captionFont={7}
       />
@@ -2218,20 +2540,37 @@ function SettingsComponent({
 
 // ==================== 7. 控制台仪表盘主视图 (Apple iOS 26 Liquid Glass System) ====================
 
-function restoreCachedMonitorData(raw: unknown): MonitorData | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
-
-  const updatedAt = toValidDate((raw as { updatedAt?: unknown }).updatedAt)
-  return updatedAt ? { ...(raw as MonitorData), updatedAt } : null
+function restoreCachedMonitorData(raw: unknown, config: AppConfig): MonitorData | null {
+  const cached = readSnapshot<MonitorData>(raw, config)
+  if (!cached) return null
+  const now = new Date()
+  const thresholdGB = config.trafficThresholdGB
+  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
+  const remainingGB = Math.max(0, Number((thresholdGB - cached.totalGB).toFixed(2)))
+  const daysRemaining = Math.max(1, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1)
+  const dailyUsage = readDailyUsage(config, now)
+  return {
+    ...cached,
+    isCached: true,
+    thresholdGB,
+    vpsCutoffReferenceGB,
+    remainingGB,
+    percentage: Math.min(100, Number(((cached.totalGB / thresholdGB) * 100).toFixed(1))),
+    daysRemaining,
+    dailyBudgetGB: (remainingGB / daysRemaining).toFixed(2),
+    dailyUsage,
+    sevenDayTotalGB: sumCompleteSevenDays(dailyUsage),
+    todayEstimatedGB: dailyUsage[dailyUsage.length - 1]?.valueGB ?? null
+  }
 }
 
-function getCachedDashboardSnapshot(): { data: MonitorData | null; lastUpdated: Date | null } {
+function getCachedDashboardSnapshot(config: AppConfig, key: string = SNAPSHOT_STORAGE_KEY): { data: MonitorData | null; lastUpdated: Date | null } {
   try {
     if (typeof Storage !== "undefined" && Storage?.get) {
-      const raw = Storage.get(SNAPSHOT_STORAGE_KEY)
+      const raw = Storage.get(key)
       if (raw) {
         const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
-        const data = restoreCachedMonitorData(parsed)
+        const data = restoreCachedMonitorData(parsed, config)
         return { data, lastUpdated: data?.updatedAt || null }
       }
     }
@@ -2242,7 +2581,8 @@ function getCachedDashboardSnapshot(): { data: MonitorData | null; lastUpdated: 
 function AppDashboard() {
   const [config, setConfig] = useState<AppConfig>(loadSavedConfig())
   const [showSettings, setShowSettings] = useState(!isConfigReady(config))
-  const initialCache = getCachedDashboardSnapshot()
+  const [refreshGate] = useState(() => createRefreshGate())
+  const initialCache = getCachedDashboardSnapshot(config)
   const [data, setData] = useState<MonitorData | null>(initialCache.data)
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -2388,34 +2728,47 @@ function AppDashboard() {
 
   const refresh = useCallback(
     async (cfg: AppConfig = config) => {
+      const generation = refreshGate.start()
       if (!isConfigReady(cfg)) {
         setShowSettings(true)
+        setLoading(false)
         return
       }
       setLoading(true)
       setErrorMsg(null)
       try {
         const res = await fetchMonitorData(cfg)
+        if (!refreshGate.isCurrent(generation)) return
+        assertSampleBillingMonth(res.updatedAt)
+        res.dailyUsage = recordTrafficSample(cfg, res.totalGB, res.updatedAt)
+        res.sevenDayTotalGB = sumCompleteSevenDays(res.dailyUsage)
+        res.todayEstimatedGB = res.dailyUsage[res.dailyUsage.length - 1]?.valueGB ?? null
+        res.isCached = false
         setData(res)
         setLastUpdated(res.updatedAt)
         try {
           if (typeof Storage !== "undefined" && Storage?.set) {
-            Storage.set(SNAPSHOT_STORAGE_KEY, JSON.stringify(res))
+            Storage.set(SNAPSHOT_STORAGE_KEY, JSON.stringify(createSnapshot(cfg, res)))
           }
         } catch {}
       } catch (e: any) {
+        if (!refreshGate.isCurrent(generation)) return
         setErrorMsg(humanizeAliyunError(e?.message || "网络请求失败，请检查配置"))
+        const cached = getCachedDashboardSnapshot(cfg)
+        setData(cached.data)
+        setLastUpdated(cached.lastUpdated)
       } finally {
-        setLoading(false)
+        if (refreshGate.isCurrent(generation)) setLoading(false)
       }
     },
-    [config]
+    [config, refreshGate]
   )
 
   useEffect(() => {
     if (isConfigReady(config)) {
       refresh(config)
     }
+    return () => refreshGate.invalidate()
   }, [])
 
   if (showSettings) {
@@ -2424,7 +2777,13 @@ function AppDashboard() {
         <SettingsComponent
           currentConfig={config}
           onSave={newCfg => {
+            refreshGate.invalidate()
+            const cached = getCachedDashboardSnapshot(newCfg)
             setConfig(newCfg)
+            setData(cached.data)
+            setLastUpdated(cached.lastUpdated)
+            setErrorMsg(null)
+            setIsCopied(false)
             setShowSettings(false)
             refresh(newCfg)
           }}
@@ -2462,7 +2821,7 @@ function AppDashboard() {
       ? "rgba(255, 159, 10, 0.12)"
       : "rgba(142, 142, 147, 0.12)"
 
-  const statusLabel = loading && !data
+  const observedStatusLabel = loading && !data
     ? "同步中"
     : data?.ecsStatus === "Running"
       ? "运行中"
@@ -2477,6 +2836,7 @@ function AppDashboard() {
               : errorMsg
                 ? "同步失败"
                 : "等待同步"
+  const statusLabel = data?.isCached ? `${observedStatusLabel}（缓存）` : observedStatusLabel
   const publicIpLabel = loading
     ? "获取中..."
     : errorMsg && !data
@@ -2522,7 +2882,7 @@ function AppDashboard() {
                   {loading
                     ? "正在同步..."
                     : lastUpdated
-                      ? `${String(lastUpdated.getHours()).padStart(2, "0")}:${String(lastUpdated.getMinutes()).padStart(2, "0")} 已同步`
+                      ? `${data?.isCached ? "缓存 · " : ""}${String(lastUpdated.getHours()).padStart(2, "0")}:${String(lastUpdated.getMinutes()).padStart(2, "0")}`
                       : "等待同步"}
                 </Text>
               </VStack>
@@ -3114,27 +3474,35 @@ async function main() {
   const isWidget = typeof Widget !== "undefined" && Boolean(Widget?.family)
 
   if (isWidget) {
+    const config = loadSavedConfig()
     try {
-      const config = loadSavedConfig()
       if (!isConfigReady(config)) {
         presentWidget(<NotConfiguredWidget />)
         return
       }
-      const data = await fetchMonitorData(config)
+      const data = await fetchMonitorData(config, false)
+      assertSampleBillingMonth(data.updatedAt)
+      data.dailyUsage = recordTrafficSample(config, data.totalGB, data.updatedAt)
+      data.sevenDayTotalGB = sumCompleteSevenDays(data.dailyUsage)
+      data.todayEstimatedGB = data.dailyUsage[data.dailyUsage.length - 1]?.valueGB ?? null
+      try {
+        if (typeof Storage !== "undefined" && Storage?.set) {
+          const previous = readSnapshot<MonitorData>(Storage.get(WIDGET_SNAPSHOT_STORAGE_KEY), config)
+          if (!previous || previous.updatedAt.getTime() < data.updatedAt.getTime()) {
+            Storage.set(WIDGET_SNAPSHOT_STORAGE_KEY, JSON.stringify(createSnapshot(config, data)))
+          }
+        }
+      } catch {}
       presentMonitorWidget(data)
     } catch (err: any) {
       console.error("小组件加载失败:", err)
       // 弱网容灾：尝试降级渲染本地持久化快照，避免组件变红
       try {
-        if (typeof Storage !== "undefined" && Storage?.get) {
-          const raw = Storage.get(SNAPSHOT_STORAGE_KEY)
-          if (raw) {
-            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
-            const cached = restoreCachedMonitorData(parsed)
-            if (cached) {
-              presentMonitorWidget(cached)
-              return
-            }
+        for (const key of [WIDGET_SNAPSHOT_STORAGE_KEY, SNAPSHOT_STORAGE_KEY]) {
+          const cached = getCachedDashboardSnapshot(config, key).data
+          if (cached) {
+            presentMonitorWidget(cached)
+            return
           }
         }
       } catch {}
