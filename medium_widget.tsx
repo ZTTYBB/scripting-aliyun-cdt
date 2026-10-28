@@ -47,15 +47,15 @@ export function planMediumWidgetLayout(
     ? measuredSize!.height : canvasHeight - 32
   const small = availableHeight < 123
   const large = availableHeight >= 138
+  // Whitespace between the three sections replaces the old per-tile boxes.
   const padding = small ? 3 : large ? 5 : 4
-  const gap = small ? 2 : large ? 4 : 3
-  const headerHeight = small ? 18 : large ? 22 : 20
-  const dailyHeight = small ? 27 : large ? 34 : 32
+  const gap = small ? 2 : large ? 6 : 5
+  const headerHeight = small ? 17 : large ? 20 : 18
+  const dailyHeight = small ? 28 : large ? 34 : 32
   const bodyHeight = Math.min(
-    small ? 52 : large ? 60 : 55,
+    small ? 52 : large ? 62 : 56,
     availableHeight - padding * 2 - headerHeight - dailyHeight - gap * 2
   )
-
   // A measured container already accounts for the host's system margins.
   const contentWidth = Math.floor(availableWidth - padding * 2)
   const usageWidth = Math.floor(contentWidth * 0.42)
@@ -99,24 +99,19 @@ function mediumUpdateTime(value: MediumWidgetData["updatedAt"]): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
 }
 
-function MediumMetricTile({
-  label, value, width, height, color = "label"
-}: { label: string; value: string; width: number; height: number; color?: any }) {
+function MediumMetric({
+  label, value, unit, width, height, color = "label"
+}: { label: string; value: string; unit: string; width: number; height: number; color?: any }) {
   return (
-    <ZStack alignment="leading" frame={{ width, height }}>
-      <RoundedRectangle
-        cornerRadius={8}
-        style="continuous"
-        fill={MEDIUM_COLORS.neutralPanel}
-        frame={{ width, height }}
-      />
-      <VStack alignment="leading" spacing={0} padding={{ horizontal: 8 }}>
-        <Text font={9} foregroundStyle="secondaryLabel" lineLimit={1}>{label}</Text>
-        <Text font={12} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.75} foregroundStyle={color}>
+    <VStack alignment="leading" spacing={0} frame={{ width, height, alignment: "topLeading" }}>
+      <Text font={9} foregroundStyle="secondaryLabel" lineLimit={1}>{label}</Text>
+      <HStack alignment="lastTextBaseline" spacing={2}>
+        <Text font={13} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.75} foregroundStyle={color}>
           {value}
         </Text>
-      </VStack>
-    </ZStack>
+        <Text font={9} foregroundStyle="secondaryLabel" lineLimit={1}>{unit}</Text>
+      </HStack>
+    </VStack>
   )
 }
 
@@ -126,14 +121,14 @@ export function DailyUsageStrip({
   return (
     <ZStack frame={{ width: layout.contentWidth, height: layout.dailyHeight }}>
       <RoundedRectangle
-        cornerRadius={6}
+        cornerRadius={8}
         style="continuous"
         fill={MEDIUM_COLORS.neutralPanel}
         frame={{ width: layout.contentWidth, height: layout.dailyHeight }}
       />
       <HStack spacing={0} alignment="center" frame={{ width: layout.contentWidth, height: layout.dailyHeight }}>
         <VStack spacing={0} alignment="center" frame={{ width: 34, height: layout.dailyHeight }}>
-          <Text font={9} foregroundStyle="secondaryLabel" lineLimit={1}>日估算</Text>
+          <Text font={9} foregroundStyle="secondaryLabel" lineLimit={1}>每日</Text>
           <Text font={8} foregroundStyle="tertiaryLabel" lineLimit={1}>GB</Text>
         </VStack>
         {data.dailyUsage.slice(-7).map(point => (
@@ -159,7 +154,7 @@ export function DailyUsageStrip({
                 >
                   {formatDailyUsage(point.valueGB)}
                 </Text>
-                <Text font={8} lineLimit={1} widgetAccentable={point.isToday} foregroundStyle={point.isToday ? MEDIUM_COLORS.blue : "secondaryLabel"}>
+                <Text font={9} lineLimit={1} widgetAccentable={point.isToday} foregroundStyle={point.isToday ? MEDIUM_COLORS.blue : "secondaryLabel"}>
                   {point.isToday ? "今天" : point.label}
                 </Text>
               </VStack>
@@ -175,8 +170,8 @@ function MediumWidgetContent({
   data, layout
 }: { data: MediumWidgetData; layout: ReturnType<typeof planMediumWidgetLayout> }) {
   const status = mediumStatus(data.ecsStatus)
-  const usageColor = data.color === "systemGreen" ? MEDIUM_COLORS.green : data.color
-  const trackWidth = layout.usageWidth - 16
+  const usageColor = data.color === "systemGreen" ? MEDIUM_COLORS.blue : data.color
+  const trackWidth = layout.usageWidth - 12
   const progress = Math.max(0, Math.min(1, data.percentage / 100))
 
   return (
@@ -187,59 +182,53 @@ function MediumWidgetContent({
       widgetBackground="systemBackground"
     >
       <HStack spacing={5} alignment="center" frame={{ width: layout.contentWidth, height: layout.headerHeight }}>
-        <Image systemName="cloud.fill" font={13} widgetAccentable foregroundStyle={MEDIUM_COLORS.blue} />
-        <Text font={13} fontWeight="semibold" lineLimit={1} foregroundStyle="label" frame={{ maxWidth: Infinity, alignment: "leading" }}>
+        <Image systemName="cloud.fill" font={12} widgetAccentable foregroundStyle={MEDIUM_COLORS.blue} />
+        <Text font={12} fontWeight="semibold" lineLimit={1} foregroundStyle="label" frame={{ maxWidth: Infinity, alignment: "leading" }}>
           阿里云 CDT
         </Text>
         <HStack spacing={4} alignment="center">
           <Circle widgetAccentable fill={status.color} frame={{ width: 6, height: 6 }} />
-          <Text font={10} fontWeight="medium" lineLimit={1} foregroundStyle="secondaryLabel">
+          <Text font={10} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
             {status.label} · {data.isCached ? "缓存 " : ""}{mediumUpdateTime(data.updatedAt)}
           </Text>
         </HStack>
       </HStack>
 
-      <HStack spacing={layout.gap} alignment="center" frame={{ width: layout.contentWidth, height: layout.bodyHeight }}>
-        <ZStack alignment="leading" frame={{ width: layout.usageWidth, height: layout.bodyHeight }}>
-          <RoundedRectangle
-            cornerRadius={8}
-            style="continuous"
-            fill={MEDIUM_COLORS.usagePanel}
-            frame={{ width: layout.usageWidth, height: layout.bodyHeight }}
-          />
-          <VStack alignment="leading" spacing={2} padding={{ horizontal: 8 }}>
-            <Text font={9} foregroundStyle="secondaryLabel" lineLimit={1}>本月出网</Text>
-            <HStack alignment="lastTextBaseline" spacing={2}>
-              <Text font={22} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.7} foregroundStyle="label">
-                {data.totalGB.toFixed(2)}
-              </Text>
-              <Text font={10} fontWeight="medium" foregroundStyle="secondaryLabel">GB</Text>
-            </HStack>
-            <ZStack alignment="leading" frame={{ width: trackWidth, height: 4 }}>
-              <RoundedRectangle cornerRadius={2} fill={MEDIUM_COLORS.track} frame={{ width: trackWidth, height: 4 }} />
-              {progress > 0 && (
-                <RoundedRectangle widgetAccentable cornerRadius={2} fill={usageColor} frame={{ width: Math.max(4, trackWidth * progress), height: 4 }} />
-              )}
-            </ZStack>
-            <HStack spacing={2} alignment="center" frame={{ width: trackWidth, height: 10 }}>
-              <Text font={8} lineLimit={1} minScaleFactor={0.8} foregroundStyle="secondaryLabel" frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                / {data.thresholdGB} GB
-              </Text>
-              <Text font={8} fontWeight="semibold" monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
-                {data.percentage.toFixed(1)}%
-              </Text>
-            </HStack>
-          </VStack>
-        </ZStack>
-
-        <VStack spacing={layout.gap} frame={{ width: layout.metricsWidth, height: layout.bodyHeight }}>
-          <HStack spacing={layout.gap}>
-            <MediumMetricTile label="参考余量" value={`${data.remainingGB.toFixed(1)} GB`} width={layout.tileWidth} height={layout.tileHeight} />
-            <MediumMetricTile label="日均可用" value={`${data.dailyBudgetGB} GB`} width={layout.tileWidth} height={layout.tileHeight} />
+      <HStack spacing={layout.gap} alignment="top" frame={{ width: layout.contentWidth, height: layout.bodyHeight }}>
+        {/* 主信息：本月用量，不加底色，靠字号建立层级 */}
+        <VStack alignment="leading" spacing={3} padding={{ leading: 4 }} frame={{ width: layout.usageWidth, height: layout.bodyHeight, alignment: "topLeading" }}>
+          <Text font={9} foregroundStyle="secondaryLabel" lineLimit={1}>本月出网</Text>
+          <HStack alignment="lastTextBaseline" spacing={2}>
+            <Text font={24} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.6} foregroundStyle="label">
+              {data.totalGB.toFixed(2)}
+            </Text>
+            <Text font={11} fontWeight="semibold" foregroundStyle="secondaryLabel">GB</Text>
           </HStack>
-          <HStack spacing={layout.gap}>
-            <MediumMetricTile label="距结算" value={`${data.daysRemaining} 天`} width={layout.tileWidth} height={layout.tileHeight} />
-            <MediumMetricTile label="近 7 日" value={`${formatDailyUsage(data.sevenDayTotalGB)} GB`} width={layout.tileWidth} height={layout.tileHeight} />
+          <ZStack alignment="leading" frame={{ width: trackWidth, height: 5 }}>
+            <RoundedRectangle cornerRadius={2.5} fill={MEDIUM_COLORS.track} frame={{ width: trackWidth, height: 5 }} />
+            {progress > 0 && (
+              <RoundedRectangle widgetAccentable cornerRadius={2.5} fill={usageColor} frame={{ width: Math.max(5, trackWidth * progress), height: 5 }} />
+            )}
+          </ZStack>
+          <HStack spacing={2} alignment="center" frame={{ width: trackWidth }}>
+            <Text font={9} monospacedDigit lineLimit={1} minScaleFactor={0.9} foregroundStyle="secondaryLabel" frame={{ maxWidth: Infinity, alignment: "leading" }}>
+              共 {data.thresholdGB} GB
+            </Text>
+            <Text font={9} fontWeight="semibold" monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+              {data.percentage.toFixed(1)}%
+            </Text>
+          </HStack>
+        </VStack>
+
+        {/* 次要指标：无底色 2×2 网格，与左侧标签顶部对齐 */}
+        <VStack spacing={layout.gap} frame={{ width: layout.metricsWidth, height: layout.bodyHeight, alignment: "topLeading" }}>
+          <HStack spacing={layout.gap} alignment="top">
+            <MediumMetric label="参考余量" value={data.remainingGB.toFixed(1)} unit="GB" width={layout.tileWidth} height={layout.tileHeight} />
+            <MediumMetric label="日均可用" value={data.dailyBudgetGB} unit="GB" width={layout.tileWidth} height={layout.tileHeight} />
+          </HStack>
+          <HStack spacing={layout.gap} alignment="top">
+            <MediumMetric label="距结算" value={String(data.daysRemaining)} unit="天" width={layout.tileWidth} height={layout.tileHeight} />
+            <MediumMetric label="近 7 日" value={formatDailyUsage(data.sevenDayTotalGB)} unit="GB" width={layout.tileWidth} height={layout.tileHeight} />
           </HStack>
         </VStack>
       </HStack>

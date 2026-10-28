@@ -381,8 +381,9 @@ test("the medium view renders its fallback dimensions when Widget.displaySize is
   assert.ok(textLabels(tree).includes("--"))
 })
 
-test("separate data panels declare adaptive light and dark fills", () => {
-  const panels = descendants(render(viewSizes[1]))
+test("the daily strip keeps an adaptive grouped panel while key figures stay visible", () => {
+  const tree = render(viewSizes[1])
+  const panels = descendants(tree)
     .flatMap(node => {
       if (node.type !== "ZStack") return []
       const shape = (node.children ?? []).find(child => {
@@ -394,11 +395,6 @@ test("separate data panels declare adaptive light and dark fills", () => {
       })
       return shape ? [{ node, shape }] : []
     })
-  assert.ok(panels.length >= 6, "Usage, four metrics, and daily records need distinct adaptive panels.")
-  for (const label of ["11.37", "6.16"]) {
-    assert.ok(panels.some(panel => textLabels(panel.node).some(text => text.includes(label))),
-      `The section containing ${label} needs an adaptive panel fill.`)
-  }
   assert.ok(panels.some(panel => {
     const labels = textLabels(panel.node)
     return labels.includes("\u4eca\u5929") && labels.includes("--")
@@ -408,5 +404,8 @@ test("separate data panels declare adaptive light and dark fills", () => {
       "Panel contrast must change for dark mode.")
     assert.ok(Number.isFinite(panel.shape.props.cornerRadius) && panel.shape.props.cornerRadius <= 8,
       "Panel fills need an explicit shape boundary.")
+  }
+  for (const label of ["11.37", "6.16"]) {
+    assert.ok(textLabels(tree).some(text => text.includes(label)), `${label} must remain visible.`)
   }
 })
