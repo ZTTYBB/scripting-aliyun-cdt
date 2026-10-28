@@ -994,45 +994,57 @@ function liquidGlass(interactive: boolean = true) {
   return {}
 }
 
+// Native inset-grouped card: solid white (light) / elevated gray (dark), like Settings.
+const CARD_FILL = { light: "#FFFFFF", dark: "#1C1C1E" } as any
+
 function dashboardSurface(cornerRadius: number = 18) {
-  const shape = { type: "rect" as const, cornerRadius, style: "continuous" as const }
-  try {
-    if (typeof UIGlass !== "undefined" && typeof UIGlass.regular === "function") {
-      return {
-        glassEffect: {
-          glass: UIGlass.regular().interactive(false),
-          shape
-        },
-        clipShape: shape
-      }
-    }
-  } catch {
-    // Older Scripting versions may not expose UIGlass.regular.
-  }
   return {
-    background: "systemBackground",
-    clipShape: shape
+    background: CARD_FILL,
+    clipShape: { type: "rect" as const, cornerRadius, style: "continuous" as const }
   }
+}
+
+/** Settings-style rounded icon tile: solid system colour with a white glyph. */
+function IconTile({ systemName, color, size = 30 }: { systemName: string; color: string; size?: number }) {
+  return (
+    <ZStack
+      frame={{ width: size, height: size }}
+      background={color}
+      clipShape={{ type: "rect", cornerRadius: size * 0.26, style: "continuous" }}
+    >
+      <Image systemName={systemName} font={size * 0.5} fontWeight="semibold" foregroundStyle="#FFFFFF" />
+    </ZStack>
+  )
+}
+
+function SectionFootnote({ children }: { children: any }) {
+  return (
+    <Text font="footnote" foregroundStyle="secondaryLabel" padding={{ horizontal: 16 }} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+      {children}
+    </Text>
+  )
 }
 
 function DashboardSectionHeader({
   title,
-  detail
+  detail,
+  trailing
 }: {
   title: string
   detail?: string
+  trailing?: any
 }) {
   return (
-    <HStack padding={{ horizontal: 4, bottom: 2 }} alignment="center">
-      <Text font={15} fontWeight="semibold" foregroundStyle="label">
+    <HStack padding={{ horizontal: 16, top: 14 }} alignment="center">
+      <Text font="footnote" foregroundStyle="secondaryLabel">
         {title}
       </Text>
       <Spacer />
-      {detail ? (
-        <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>
+      {trailing ?? (detail ? (
+        <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1}>
           {detail}
         </Text>
-      ) : null}
+      ) : null)}
     </HStack>
   )
 }
@@ -1056,49 +1068,46 @@ function MonthlyTrafficOverview({
     : null
 
   return (
-    <VStack alignment="leading" spacing={14} padding={{ vertical: 10 }} frame={{ maxWidth: Infinity }}>
+    <VStack alignment="leading" spacing={12} frame={{ maxWidth: Infinity }}>
       <HStack alignment="center">
-        <Text font={13} fontWeight="semibold" foregroundStyle="secondaryLabel">CDT 互联网出网流量</Text>
+        <Text font="subheadline" fontWeight="semibold" foregroundStyle="label">本月出网流量</Text>
         <Spacer />
-        <Text font={11} foregroundStyle="secondaryLabel">
-          {loading ? "正在更新" : updated ? `${data?.isCached ? "缓存 · " : ""}${updated}` : "等待同步"}
+        <Text font="footnote" monospacedDigit foregroundStyle="secondaryLabel">
+          {loading ? "正在更新…" : updated ? `${data?.isCached ? "缓存 · " : ""}${updated} 更新` : "等待同步"}
         </Text>
       </HStack>
-      <HStack alignment="lastTextBaseline" spacing={5}>
-        <Text font={40} bold monospacedDigit foregroundStyle="label">
+      <HStack alignment="lastTextBaseline" spacing={4}>
+        <Text font={44} fontWeight="bold" monospacedDigit foregroundStyle="label" lineLimit={1} minScaleFactor={0.6}>
           {data ? data.totalGB.toFixed(2) : "--"}
         </Text>
-        <Text font={16} foregroundStyle="secondaryLabel">GB</Text>
+        <Text font="title3" fontWeight="semibold" foregroundStyle="secondaryLabel">GB</Text>
         <Spacer />
-        <VStack alignment="trailing" spacing={2}>
-          <Text font={11} foregroundStyle="secondaryLabel">本地参考值</Text>
-          <Text font={15} bold monospacedDigit foregroundStyle="label">{thresholdGB} GB</Text>
-        </VStack>
+        <Text font="subheadline" monospacedDigit foregroundStyle="secondaryLabel">/ {thresholdGB} GB</Text>
       </HStack>
       <ProgressView
         progressViewStyle="linear"
         value={data ? Math.min(1, Math.max(0, data.totalGB / thresholdGB)) : 0}
         total={1}
-        tint={data && data.totalGB >= thresholdGB ? "systemOrange" : "systemTeal"}
-        frame={{ maxWidth: Infinity, height: 5 }}
+        tint={data && data.totalGB >= thresholdGB ? "systemOrange" : "systemBlue"}
+        frame={{ maxWidth: Infinity }}
       />
-      <HStack alignment="top" spacing={12} frame={{ maxWidth: Infinity }}>
-        <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity }}>
-          <Text font={11} foregroundStyle="secondaryLabel">内地 · 20 GB 参考</Text>
-          <Text font={17} bold monospacedDigit foregroundStyle="label">
+      <Divider />
+      <HStack alignment="top" spacing={0} frame={{ maxWidth: Infinity }}>
+        <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+          <Text font="caption1" foregroundStyle="secondaryLabel">内地 · 参考 20 GB</Text>
+          <Text font="headline" monospacedDigit foregroundStyle="label">
             {mainland ? mainland.totalGB.toFixed(2) : "--"} GB
           </Text>
         </VStack>
-        <Divider frame={{ height: 36 }} />
-        <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity }}>
-          <Text font={11} foregroundStyle="secondaryLabel">非内地 · 200 GB 参考</Text>
-          <Text font={17} bold monospacedDigit foregroundStyle="label">
+        <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+          <Text font="caption1" foregroundStyle="secondaryLabel">非内地 · 参考 200 GB</Text>
+          <Text font="headline" monospacedDigit foregroundStyle="label">
             {nonMainland ? nonMainland.totalGB.toFixed(2) : "--"} GB
           </Text>
         </VStack>
       </HStack>
       {unknown && unknown.totalBytes > 0 ? (
-        <Text font={11} foregroundStyle="systemOrange">
+        <Text font="caption1" foregroundStyle="systemOrange">
           另有 {unknown.totalGB.toFixed(2)} GB 地域未识别，未计入上述分项
         </Text>
       ) : null}
@@ -1117,33 +1126,13 @@ function maskAccessKeyId(value: string): string {
   return `••••${suffix}`
 }
 
-function SettingsActionButton({
-  label,
-  action,
-  accessibilityLabel
-}: {
-  label: string
-  action: () => void
-  accessibilityLabel: string
-}) {
-  return (
-    <Button action={action} buttonStyle="glass" accessibilityLabel={accessibilityLabel}>
-      <HStack spacing={4} alignment="center">
-        <Text font="caption1" bold foregroundStyle="tintColor">
-          {label}
-        </Text>
-        <Image systemName="chevron.right" font={10} foregroundStyle="secondaryLabel" />
-      </HStack>
-    </Button>
-  )
-}
-
+/** Native Settings-style row: the whole row is tappable, value sits on the trailing edge. */
 function SettingsRow({
   icon,
   iconColor,
   title,
   detail,
-  actionLabel,
+  detailColor = "secondaryLabel",
   action,
   accessibilityLabel
 }: {
@@ -1151,22 +1140,48 @@ function SettingsRow({
   iconColor: string
   title: string
   detail: string
-  actionLabel: string
+  detailColor?: string
   action: () => void
   accessibilityLabel: string
 }) {
   return (
-    <HStack alignment="center" spacing={12} padding={{ vertical: 4 }}>
-      <Image systemName={icon} font={17} foregroundStyle={iconColor} frame={{ width: 28, height: 28 }} />
-      <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-        <Text font="subheadline" foregroundStyle="label" lineLimit={1}>{title}</Text>
-        <Text font="caption2" foregroundStyle="secondaryLabel" lineLimit={1}>{detail}</Text>
-      </VStack>
-      <SettingsActionButton
-        label={actionLabel}
-        action={action}
-        accessibilityLabel={accessibilityLabel}
+    <Button action={action} buttonStyle="plain" accessibilityLabel={accessibilityLabel} frame={{ maxWidth: Infinity }}>
+      <HStack alignment="center" spacing={12} padding={{ vertical: 2 }} frame={{ maxWidth: Infinity }}>
+        <IconTile systemName={icon} color={iconColor} size={29} />
+        <Text font="body" foregroundStyle="label" lineLimit={1}>{title}</Text>
+        <Spacer />
+        <Text font="body" foregroundStyle={detailColor} lineLimit={1} minScaleFactor={0.75}>{detail}</Text>
+        <Image systemName="chevron.right" font={13} fontWeight="semibold" foregroundStyle="tertiaryLabel" />
+      </HStack>
+    </Button>
+  )
+}
+
+/** Fallback grouped card for Scripting builds without List. */
+function SettingsCard({ children }: { children: any }) {
+  return (
+    <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface(12)}>
+      {children}
+    </VStack>
+  )
+}
+
+function SettingsCardRow({ children }: { children: any }) {
+  return <VStack padding={{ horizontal: 16, vertical: 9 }}>{children}</VStack>
+}
+
+function SettingsNotice({ kind, text }: { kind: "error" | "success"; text: string }) {
+  const color = kind === "error" ? "systemRed" : "systemGreen"
+  return (
+    <HStack alignment="top" spacing={8} padding={{ vertical: 2 }}>
+      <Image
+        systemName={kind === "error" ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"}
+        font="subheadline"
+        foregroundStyle={color}
       />
+      <Text font="subheadline" foregroundStyle="label" lineLimit={4} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+        {text}
+      </Text>
     </HStack>
   )
 }
@@ -1350,172 +1365,158 @@ function SettingsView({
     onSave(newCfg)
   }
 
-  // Native grouped settings layout. The legacy fallback below keeps the script
+  const akRow = (
+    <SettingsRow
+      icon="key.fill"
+      iconColor="systemOrange"
+      title="AccessKey ID"
+      detail={ak ? maskAccessKeyId(ak) : "未设置"}
+      detailColor={ak ? "secondaryLabel" : "systemBlue"}
+      accessibilityLabel="设置 AccessKey ID"
+      action={() => promptField("设置 AccessKey ID", "请输入阿里云 AccessKey ID (LTAI 开头)", ak, "LTAI...", setAk)}
+    />
+  )
+  const skRow = (
+    <SettingsRow
+      icon="lock.fill"
+      iconColor="systemRed"
+      title="AccessKey Secret"
+      detail={sk ? "已设置" : "未设置"}
+      detailColor={sk ? "secondaryLabel" : "systemBlue"}
+      accessibilityLabel="设置 AccessKey Secret"
+      action={() => promptField("设置 AccessKey Secret", "请输入阿里云 AccessKey Secret", sk, "您的 Secret Key", setSk)}
+    />
+  )
+  const ecsRow = (
+    <SettingsRow
+      icon="server.rack"
+      iconColor="systemGreen"
+      title="实例 ID"
+      detail={ecsId || "未设置"}
+      detailColor={ecsId ? "secondaryLabel" : "systemBlue"}
+      accessibilityLabel="设置 ECS 实例 ID"
+      action={() => promptField("设置 ECS 实例 ID", "请输入要监控状态的 ECS 实例 ID", ecsId, "i-xxxxxxxxxxxx", setEcsId)}
+    />
+  )
+  const regionRow = (
+    <SettingsRow
+      icon="globe.asia.australia.fill"
+      iconColor="systemIndigo"
+      title="地域"
+      detail={region || "cn-hongkong"}
+      accessibilityLabel="设置 ECS 地域"
+      action={handleSelectRegion}
+    />
+  )
+  const thresholdRow = (
+    <SettingsRow
+      icon="speedometer"
+      iconColor="systemPurple"
+      title="月用量参考值"
+      detail={`${threshold || "200"} GB`}
+      accessibilityLabel="设置本地月用量参考值"
+      action={() => promptField("本地月用量参考值 (GB)", "仅作本地用量参考，不代表阿里云账号完整免费额度余额，也不会触发 ECS 操作", threshold, "200", setThreshold)}
+    />
+  )
+  const cutoffRow = (
+    <SettingsRow
+      icon="shield.lefthalf.filled"
+      iconColor="systemTeal"
+      title="VPS 熔断参考线"
+      detail={`${cutoffReference} GB`}
+      accessibilityLabel="设置 VPS 熔断参考线"
+      action={() => promptField("VPS 熔断参考线 (GB)", "按 VPS 脚本阈值手动填写；此值只用于手机告警，不会同步或关机", cutoffReference, cutoffReference, setCutoffReference)}
+    />
+  )
+  const pasteRow = (
+    <Button action={handleSmartPaste} buttonStyle="plain" accessibilityLabel="一键识别剪贴板" frame={{ maxWidth: Infinity }}>
+      <HStack alignment="center" spacing={12} padding={{ vertical: 2 }} frame={{ maxWidth: Infinity }}>
+        <IconTile systemName="doc.on.clipboard.fill" color="systemBlue" size={29} />
+        <Text font="body" foregroundStyle="systemBlue" frame={{ maxWidth: Infinity, alignment: "leading" }}>
+          从剪贴板识别凭据
+        </Text>
+      </HStack>
+    </Button>
+  )
+  const saveRow = (
+    <Button action={handleSave} buttonStyle="plain" accessibilityLabel="保存配置并返回控制台" frame={{ maxWidth: Infinity }}>
+      <Text font="body" fontWeight="semibold" foregroundStyle="systemBlue" padding={{ vertical: 2 }} frame={{ maxWidth: Infinity, alignment: "center" }}>
+        保存并返回
+      </Text>
+    </Button>
+  )
+  const versionFooter = (
+    <VStack alignment="center" spacing={2} frame={{ maxWidth: Infinity }}>
+      <Text font="footnote" foregroundStyle="secondaryLabel">阿里云 CDT 监控 v{APP_VERSION}</Text>
+      <Text font="caption1" foregroundStyle="tertiaryLabel">BSS 账单查询 · Build 2026.10.03</Text>
+    </VStack>
+  )
+  const footnote = (text: string) => <Text font="footnote" foregroundStyle="secondaryLabel">{text}</Text>
+  const toolbar = {
+    topBarLeading: isConfigReady(currentConfig)
+      ? [
+          <Button key="settings-back" action={onCancel} accessibilityLabel="返回">
+            <Image systemName="chevron.backward" foregroundStyle="label" />
+          </Button>,
+        ]
+      : undefined,
+    topBarTrailing: [
+      <Button key="settings-save" action={handleSave} accessibilityLabel="保存配置">
+        <Text font="body" fontWeight="semibold" foregroundStyle="systemBlue">保存</Text>
+      </Button>,
+    ],
+  }
+
+  // Native grouped settings layout. The fallback below keeps the script
   // usable on older Scripting builds that do not expose List.
   if (typeof List !== "undefined") {
     return (
       <List
-        background="systemGroupedBackground"
         navigationTitle="参数配置"
         navigationBarTitleDisplayMode="inline"
-        toolbarBackground="clear"
-        toolbarBackgroundVisibility={{ visibility: "hidden", bars: ["navigationBar"] }}
-        scrollEdgeEffectStyle={{ style: "soft", edges: ["top"] }}
-        contentMargins={{
-          edges: ["top", "horizontal"],
-          insets: { top: 0, leading: 8, bottom: 0, trailing: 8 },
-          placement: "scrollContent"
-        }}
-        toolbar={{
-          topBarLeading: isConfigReady(currentConfig)
-            ? [
-                <Button key="settings-back" action={onCancel} accessibilityLabel="返回">
-                  <Image systemName="chevron.backward" foregroundStyle="label" />
-                </Button>,
-              ]
-            : undefined,
-          topBarTrailing: [
-            <Button key="settings-save" action={handleSave} accessibilityLabel="保存配置">
-              <Image systemName="checkmark" foregroundStyle="tintColor" />
-            </Button>,
-          ],
-        }}
+        toolbar={toolbar}
       >
         {errorNotice && (
           <Section>
-            <HStack alignment="top" spacing={8} padding={{ vertical: 4 }}>
-              <Image systemName="exclamationmark.triangle.fill" font={13} foregroundStyle="systemRed" />
-              <Text font="caption1" foregroundStyle="systemRed" lineLimit={4} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                {errorNotice}
-              </Text>
-            </HStack>
+            <SettingsNotice kind="error" text={errorNotice} />
           </Section>
         )}
-
         {successNotice && (
           <Section>
-            <HStack alignment="top" spacing={8} padding={{ vertical: 4 }}>
-              <Image systemName="checkmark.circle.fill" font={13} foregroundStyle="systemGreen" />
-              <Text font="caption1" foregroundStyle="systemGreen" lineLimit={4} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                {successNotice}
-              </Text>
-            </HStack>
+            <SettingsNotice kind="success" text={successNotice} />
           </Section>
         )}
 
-        <Section
-          header={<Text>快捷导入</Text>}
-          footer={<Text font="footnote" foregroundStyle="secondaryLabel">复制包含阿里云凭据的文本后点击识别，自动填入可识别字段。</Text>}
-        >
-          <HStack alignment="center" spacing={12} padding={{ vertical: 4 }}>
-            <Image systemName="doc.on.clipboard" font={18} foregroundStyle="systemBlue" frame={{ width: 28, height: 28 }} />
-            <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" foregroundStyle="label">智能剪贴板识别</Text>
-              <Text font="caption2" foregroundStyle="secondaryLabel" lineLimit={1}>自动提取 AK、SK 与实例 ID</Text>
-            </VStack>
-            <Button action={handleSmartPaste} buttonStyle="glass" accessibilityLabel="一键识别剪贴板">
-              <HStack spacing={4} alignment="center">
-                <Image systemName="sparkles" font={12} foregroundStyle="tintColor" />
-                <Text font="caption1" bold foregroundStyle="tintColor">识别</Text>
-              </HStack>
-            </Button>
-          </HStack>
+        <Section footer={footnote("复制包含阿里云凭据的文本后轻点，自动填入可识别的 AK、SK、实例 ID 与地域。")}>
+          {pasteRow}
         </Section>
 
         <Section
           header={<Text>阿里云访问凭据</Text>}
-          footer={<Text font="footnote" foregroundStyle="secondaryLabel">凭据保存在 Scripting 本机 Storage；建议使用最小权限 RAM 凭据。</Text>}
+          footer={footnote("凭据保存在 Scripting 本机 Storage，未做应用层加密，请使用最小权限 RAM 凭据。")}
         >
-          <SettingsRow
-            icon="key"
-            iconColor="systemOrange"
-            title="AccessKey ID"
-            detail={ak ? maskAccessKeyId(ak) : "未设置"}
-            actionLabel={ak ? "修改" : "设置"}
-            accessibilityLabel="设置 AccessKey ID"
-            action={() => promptField("设置 AccessKey ID", "请输入阿里云 AccessKey ID (LTAI 开头)", ak, "LTAI...", setAk)}
-          />
-          <SettingsRow
-            icon="lock"
-            iconColor="systemRed"
-            title="AccessKey Secret"
-            detail={sk ? "已设置" : "未设置"}
-            actionLabel={sk ? "修改" : "设置"}
-            accessibilityLabel="设置 AccessKey Secret"
-            action={() => promptField("设置 AccessKey Secret", "请输入阿里云 AccessKey Secret", sk, "您的 Secret Key", setSk)}
-          />
+          {akRow}
+          {skRow}
         </Section>
 
         <Section
           header={<Text>目标 ECS 实例</Text>}
-          footer={<Text font="footnote" foregroundStyle="secondaryLabel">Region ID 必须与 ECS 实例所在的物理地域一致。</Text>}
+          footer={footnote("Region ID 必须与 ECS 实例所在的物理地域一致。")}
         >
-          <SettingsRow
-            icon="server.rack"
-            iconColor="systemGreen"
-            title="ECS 实例 ID"
-            detail={ecsId || "未设置"}
-            actionLabel={ecsId ? "修改" : "设置"}
-            accessibilityLabel="设置 ECS 实例 ID"
-            action={() => promptField("设置 ECS 实例 ID", "请输入要监控状态的 ECS 实例 ID", ecsId, "i-xxxxxxxxxxxx", setEcsId)}
-          />
-          <SettingsRow
-            icon="globe.asia.australia"
-            iconColor="systemIndigo"
-            title="ECS 所在地域"
-            detail={region || "cn-hongkong"}
-            actionLabel="选择"
-            accessibilityLabel="设置 ECS 地域"
-            action={handleSelectRegion}
-          />
+          {ecsRow}
+          {regionRow}
         </Section>
 
         <Section
           header={<Text>流量参考值</Text>}
-          footer={<Text font="footnote" foregroundStyle="secondaryLabel">参考线仅用于本机展示和提醒，不代表阿里云账号完整免费额度，也不会控制 ECS。</Text>}
+          footer={footnote("参考线仅用于本机展示和提醒，不代表阿里云账号完整免费额度，也不会控制 ECS。VPS 独立负责保活与熔断。")}
         >
-          <SettingsRow
-            icon="speedometer"
-            iconColor="systemPurple"
-            title="本地月用量参考值"
-            detail={`${threshold || "200"} GB / 月`}
-            actionLabel="修改"
-            accessibilityLabel="设置本地月用量参考值"
-            action={() => promptField("本地月用量参考值 (GB)", "仅作本地用量参考，不代表阿里云账号完整免费额度余额，也不会触发 ECS 操作", threshold, "200", setThreshold)}
-          />
-          <SettingsRow
-            icon="shield.lefthalf.filled"
-            iconColor="systemTeal"
-            title="VPS 熔断参考线"
-            detail={`${cutoffReference} GB · 仅展示`}
-            actionLabel="修改"
-            accessibilityLabel="设置 VPS 熔断参考线"
-            action={() => promptField("VPS 熔断参考线 (GB)", "按 VPS 脚本阈值手动填写；此值只用于手机告警，不会同步或关机", cutoffReference, cutoffReference, setCutoffReference)}
-          />
+          {thresholdRow}
+          {cutoffRow}
         </Section>
 
-        <Section>
-          <Button
-            action={handleSave}
-            buttonStyle="glass"
-            controlSize="large"
-            accessibilityLabel="保存配置并返回控制台"
-          >
-            <HStack spacing={8} alignment="center">
-              <Image systemName="checkmark.circle.fill" font={16} foregroundStyle="tintColor" />
-              <Text font="headline" foregroundStyle="tintColor">保存并返回</Text>
-            </HStack>
-          </Button>
-        </Section>
-
-        <Section>
-          <VStack alignment="center" spacing={3} padding={{ vertical: 16 }}>
-            <HStack spacing={6} alignment="center">
-              <Image systemName="checkmark.shield.fill" font={12} foregroundStyle="systemGreen" />
-              <Text font={13} foregroundStyle="secondaryLabel">阿里云 CDT 监控 v{APP_VERSION}</Text>
-            </HStack>
-            <Text font={11} foregroundStyle="tertiaryLabel">BSS 账单查询 · Build 2026.10.03</Text>
-          </VStack>
+        <Section footer={versionFooter}>
+          {saveRow}
         </Section>
       </List>
     )
@@ -1527,317 +1528,51 @@ function SettingsView({
       showsIndicators={false}
       navigationTitle="参数配置"
       navigationBarTitleDisplayMode="inline"
-      toolbarBackground="clear"
-      toolbarBackgroundVisibility={{ visibility: "hidden", bars: ["navigationBar"] }}
-      scrollEdgeEffectStyle={{ style: "soft", edges: ["top"] }}
-      toolbar={{
-        topBarLeading: isConfigReady(currentConfig)
-          ? [
-              <Button key="settings-back" action={onCancel} accessibilityLabel="返回">
-                <Image systemName="chevron.backward" foregroundStyle="label" />
-              </Button>,
-            ]
-          : undefined,
-        topBarTrailing: [
-          <Button key="settings-save" action={handleSave} accessibilityLabel="保存配置">
-            <Image systemName="checkmark" foregroundStyle="systemBlue" />
-          </Button>,
-        ],
-      }}
+      toolbar={toolbar}
     >
-      <VStack
-        alignment="leading"
-        spacing={12}
-        padding={{ horizontal: 16, top: 12, bottom: 40 }}
-      >
-        {/* 提示横幅 (统一使用 Apple 原生 SF Symbols 矢量图标) */}
-        {errorNotice && (
-          <HStack
-            alignment="top"
-            spacing={8}
-            padding={{ horizontal: 16, vertical: 12 }}
-            background="rgba(255, 59, 48, 0.10)"
-            border={{ style: "rgba(255, 59, 48, 0.25)", width: 0.75 }}
-            clipShape={{ type: "rect", cornerRadius: 16, style: "continuous" }}
-          >
-            <Image systemName="exclamationmark.triangle.fill" font={13} foregroundStyle="systemRed" />
-            <Text font="caption1" bold foregroundStyle="systemRed" lineLimit={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              {errorNotice}
-            </Text>
-          </HStack>
-        )}
-        {successNotice && (
-          <HStack
-            alignment="top"
-            spacing={8}
-            padding={{ horizontal: 16, vertical: 12 }}
-            background="rgba(52, 199, 89, 0.10)"
-            border={{ style: "rgba(52, 199, 89, 0.25)", width: 0.75 }}
-            clipShape={{ type: "rect", cornerRadius: 16, style: "continuous" }}
-          >
-            <Image systemName="checkmark.circle.fill" font={13} foregroundStyle="systemGreen" />
-            <Text font="caption1" bold foregroundStyle="systemGreen" lineLimit={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              {successNotice}
-            </Text>
-          </HStack>
+      <VStack alignment="leading" spacing={8} padding={{ horizontal: 16, top: 12, bottom: 40 }}>
+        {(errorNotice || successNotice) && (
+          <SettingsCard>
+            {errorNotice && <SettingsCardRow><SettingsNotice kind="error" text={errorNotice} /></SettingsCardRow>}
+            {successNotice && <SettingsCardRow><SettingsNotice kind="success" text={successNotice} /></SettingsCardRow>}
+          </SettingsCard>
         )}
 
-        {/* Section 1: 快捷导入 */}
-        <DashboardSectionHeader title="快捷导入" />
-        <VStack spacing={0} {...dashboardSurface()}>
-          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
-            <ZStack
-              frame={{ width: 36, height: 36 }}
-              background="rgba(0, 122, 255, 0.10)"
-              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
-            >
-              <Image systemName="doc.on.clipboard" font={16} foregroundStyle="systemBlue" />
-            </ZStack>
-            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundStyle="label">
-                智能剪贴板识别
-              </Text>
-              <Text font="caption2" foregroundStyle="secondaryLabel">
-                自动提取复制文本中的 AK、SK 与实例 ID
-              </Text>
-            </VStack>
-            <Button action={handleSmartPaste} buttonStyle="plain">
-              <HStack
-                padding={{ horizontal: 12, vertical: 6 }}
-                background="rgba(0, 122, 255, 0.10)"
-                border={{ style: "rgba(0, 122, 255, 0.25)", width: 0.75 }}
-                clipShape={{ type: "capsule" }}
-                spacing={5}
-                alignment="center"
-                {...liquidGlass(true)}
-              >
-                <Image systemName="sparkles" font={12} foregroundStyle="systemBlue" />
-                <Text font="caption1" bold foregroundStyle="systemBlue">一键识别</Text>
-              </HStack>
-            </Button>
-          </HStack>
-        </VStack>
-        <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-          复制包含阿里云凭据的文本后轻点此处，自动提取填入下方所有字段。
-        </Text>
+        <SettingsCard>
+          <SettingsCardRow>{pasteRow}</SettingsCardRow>
+        </SettingsCard>
+        <SectionFootnote>复制包含阿里云凭据的文本后轻点，自动填入可识别的 AK、SK、实例 ID 与地域。</SectionFootnote>
 
-        {/* Section 2: 访问凭据 */}
         <DashboardSectionHeader title="阿里云访问凭据" />
-        <VStack spacing={0} {...dashboardSurface()}>
-          {/* AccessKey ID */}
-          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
-            <ZStack
-              frame={{ width: 36, height: 36 }}
-              background="rgba(255, 149, 0, 0.10)"
-              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
-            >
-              <Image systemName="key" font={16} foregroundStyle="systemOrange" />
-            </ZStack>
-            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundStyle="label">
-                AccessKey ID
-              </Text>
-              <Text font="caption2" foregroundStyle={ak ? "secondaryLabel" : "systemBlue"} lineLimit={1}>
-                {ak ? maskAccessKeyId(ak) : "轻点右侧设置 >"}
-              </Text>
-            </VStack>
-            <SettingsActionButton
-              label={ak ? "修改" : "设置"}
-              accessibilityLabel="设置 AccessKey ID"
-              action={() =>
-                promptField("设置 AccessKey ID", "请输入阿里云 AccessKey ID (LTAI 开头)", ak, "LTAI...", setAk)
-              }
-            />
-          </HStack>
+        <SettingsCard>
+          <SettingsCardRow>{akRow}</SettingsCardRow>
+          <Divider padding={{ leading: 57 }} />
+          <SettingsCardRow>{skRow}</SettingsCardRow>
+        </SettingsCard>
+        <SectionFootnote>凭据保存在 Scripting 本机 Storage，未做应用层加密，请使用最小权限 RAM 凭据。</SectionFootnote>
 
-          <Divider padding={{ leading: 64 }} />
-
-          {/* AccessKey Secret */}
-          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
-            <ZStack
-              frame={{ width: 36, height: 36 }}
-              background="rgba(255, 59, 48, 0.10)"
-              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
-            >
-              <Image systemName="lock" font={16} foregroundStyle="systemRed" />
-            </ZStack>
-            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundStyle="label">
-                AccessKey Secret
-              </Text>
-              <Text font="caption2" foregroundStyle={sk ? "systemGreen" : "systemBlue"} lineLimit={1}>
-                {sk ? "已设置" : "轻点右侧设置"}
-              </Text>
-            </VStack>
-            <SettingsActionButton
-              label={sk ? "修改" : "设置"}
-              accessibilityLabel="设置 AccessKey Secret"
-              action={() =>
-                promptField("设置 AccessKey Secret", "请输入阿里云 AccessKey Secret", sk, "您的 Secret Key", setSk)
-              }
-            />
-          </HStack>
-        </VStack>
-        <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-          凭据保存在 Scripting 本机 Storage；此项目未实现应用层加密，请使用最小权限 RAM 凭据。
-        </Text>
-
-        {/* Section 3: 目标实例与地域 */}
         <DashboardSectionHeader title="目标 ECS 实例" />
-        <VStack spacing={0} {...dashboardSurface()}>
-          {/* ECS 实例 ID */}
-          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
-            <ZStack
-              frame={{ width: 36, height: 36 }}
-              background="rgba(52, 199, 89, 0.10)"
-              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
-            >
-              <Image systemName="server.rack" font={16} foregroundStyle="systemGreen" />
-            </ZStack>
-            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundStyle="label">
-                ECS 实例 ID
-              </Text>
-              <Text font="caption2" foregroundStyle={ecsId ? "secondaryLabel" : "systemBlue"} lineLimit={1}>
-                {ecsId ? ecsId : "未设置 (如 i-j6c...)"}
-              </Text>
-            </VStack>
-            <SettingsActionButton
-              label={ecsId ? "修改" : "设置"}
-              accessibilityLabel="设置 ECS 实例 ID"
-              action={() =>
-                promptField("设置 ECS 实例 ID", "请输入要监控状态的 ECS 实例 ID", ecsId, "i-xxxxxxxxxxxx", setEcsId)
-              }
-            />
-          </HStack>
+        <SettingsCard>
+          <SettingsCardRow>{ecsRow}</SettingsCardRow>
+          <Divider padding={{ leading: 57 }} />
+          <SettingsCardRow>{regionRow}</SettingsCardRow>
+        </SettingsCard>
+        <SectionFootnote>Region ID 必须与 ECS 实例所在的物理地域一致。</SectionFootnote>
 
-          <Divider padding={{ leading: 64 }} />
-
-          {/* ECS 地域 */}
-          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
-            <ZStack
-              frame={{ width: 36, height: 36 }}
-              background="rgba(88, 86, 214, 0.10)"
-              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
-            >
-              <Image systemName="globe.asia.australia" font={16} foregroundStyle="systemIndigo" />
-            </ZStack>
-            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundStyle="label">
-                ECS 所在地域
-              </Text>
-              <Text font="caption2" foregroundStyle="secondaryLabel">
-                {region || "cn-hongkong"}
-              </Text>
-            </VStack>
-            <SettingsActionButton
-              label="选择"
-              accessibilityLabel="设置 ECS 地域"
-              action={handleSelectRegion}
-            />
-          </HStack>
-        </VStack>
-        <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-          确保 Region ID 与 ECS 实例所在的物理地域一致。
-        </Text>
-
-        {/* Section 4: 只读流量参考值 */}
         <DashboardSectionHeader title="流量参考值" />
-        <VStack spacing={0} {...dashboardSurface()}>
-          {/* 本地月用量参考值 */}
-          <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
-            <ZStack
-              frame={{ width: 36, height: 36 }}
-              background="rgba(175, 82, 222, 0.10)"
-              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
-            >
-              <Image systemName="speedometer" font={16} foregroundStyle="systemPurple" />
-            </ZStack>
-            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundStyle="label">
-                本地月用量参考值
-              </Text>
-              <Text font="caption2" foregroundStyle="systemOrange">
-                {threshold || "200"} GB / 月
-              </Text>
-            </VStack>
-            <SettingsActionButton
-              label="修改"
-              accessibilityLabel="设置本地月用量参考值"
-              action={() =>
-                promptField("本地月用量参考值 (GB)", "仅作本地用量参考，不代表阿里云账号完整免费额度余额，也不会触发 ECS 操作", threshold, "200", setThreshold)
-              }
-            />
-          </HStack>
+        <SettingsCard>
+          <SettingsCardRow>{thresholdRow}</SettingsCardRow>
+          <Divider padding={{ leading: 57 }} />
+          <SettingsCardRow>{cutoffRow}</SettingsCardRow>
+        </SettingsCard>
+        <SectionFootnote>参考线仅用于本机展示和提醒，不代表阿里云账号完整免费额度，也不会控制 ECS。VPS 独立负责保活与熔断。</SectionFootnote>
 
-          <Divider padding={{ leading: 64 }} />
-
-          {/* VPS 熔断线仅供本地对照 */}
-          <HStack padding={{ horizontal: 16, vertical: 12 }} alignment="center" spacing={12}>
-            <ZStack
-              frame={{ width: 36, height: 36 }}
-              background="rgba(0, 199, 190, 0.10)"
-              clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
-            >
-              <Image systemName="shield.lefthalf.filled" font={16} foregroundStyle="systemTeal" />
-            </ZStack>
-            <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-              <Text font="subheadline" bold foregroundStyle="label">
-                VPS 熔断参考线
-              </Text>
-              <Text font="caption2" foregroundStyle="secondaryLabel">
-                {cutoffReference} GB · 仅展示，不控制 ECS
-              </Text>
-            </VStack>
-            <SettingsActionButton
-              label="修改"
-              accessibilityLabel="设置 VPS 熔断参考线"
-              action={() =>
-                promptField("VPS 熔断参考线 (GB)", "按 VPS 脚本阈值手动填写；此值只用于手机告警，不会同步或关机", cutoffReference, cutoffReference, setCutoffReference)
-              }
-            />
-          </HStack>
+        <VStack padding={{ top: 20 }}>
+          <SettingsCard>
+            <SettingsCardRow>{saveRow}</SettingsCardRow>
+          </SettingsCard>
         </VStack>
-        <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 16 }}>
-          VPS 独立负责保活与熔断。手机只查询阿里云；此处的参考线不会与 VPS 同步。
-        </Text>
-
-        {/* 底部保存按钮 (Apple iOS 26 Liquid Glass Capsule) */}
-        <Button
-          action={handleSave}
-          buttonStyle="plain"
-          accessibilityLabel="保存配置并返回控制台"
-          frame={{ maxWidth: Infinity, height: 50 }}
-        >
-          <HStack
-            frame={{ maxWidth: Infinity, height: 50 }}
-            background="systemBlue"
-            border={{ style: "rgba(255, 255, 255, 0.35)", width: 1 }}
-            clipShape={{ type: "capsule" }}
-            shadow={{ color: "rgba(0, 122, 255, 0.32)", radius: 10, x: 0, y: 3 }}
-            alignment="center"
-            spacing={8}
-            {...liquidGlass(true)}
-          >
-            <Image systemName="checkmark.circle.fill" font={17} foregroundStyle="#FFFFFF" />
-            <Text font="headline" bold foregroundStyle="#FFFFFF">
-              保存并返回
-            </Text>
-          </HStack>
-        </Button>
-
-        {/* 版本号与构建信息 */}
-        <VStack alignment="center" spacing={4} padding={{ top: 16, bottom: 24 }}>
-          <HStack spacing={6} alignment="center">
-            <Image systemName="checkmark.shield.fill" font={12} foregroundStyle="systemGreen" />
-            <Text font={13} bold foregroundStyle="secondaryLabel">
-              阿里云 CDT 监控 v{APP_VERSION}
-            </Text>
-          </HStack>
-          <Text font={11} foregroundStyle="tertiaryLabel">
-            BSS 账单查询 · Build 2026.10.03
-          </Text>
-        </VStack>
+        <VStack padding={{ top: 8 }}>{versionFooter}</VStack>
       </VStack>
     </ScrollView>
   )
@@ -2204,22 +1939,6 @@ function ConsoleView() {
           ? "systemRed"
           : "secondaryLabel"
 
-  const haloColor = isRunning
-    ? "rgba(52, 199, 89, 0.28)"
-    : isTransitional
-      ? "rgba(255, 159, 10, 0.30)"
-      : isStopped
-        ? "rgba(88, 86, 214, 0.30)"
-        : "rgba(142, 142, 147, 0.25)"
-
-  const capsuleBg = isRunning
-    ? "rgba(52, 199, 89, 0.10)"
-    : isTransitional
-      ? "rgba(255, 159, 10, 0.12)"
-      : isStopped
-        ? "rgba(88, 86, 214, 0.12)"
-        : "rgba(142, 142, 147, 0.12)"
-
   const observedStatusLabel = loading && !data
     ? "同步中"
     : data?.ecsStatus === "Running"
@@ -2294,28 +2013,26 @@ function ConsoleView() {
         >
           <VStack
             alignment="leading"
-            spacing={14}
-            padding={{ horizontal: 16, top: 12, bottom: 20 }}
+            spacing={8}
+            padding={{ horizontal: 16, top: 8, bottom: 20 }}
           >
 
           {errorMessage && (
             <HStack
               alignment="top"
-              spacing={8}
+              spacing={10}
               padding={{ horizontal: 16, vertical: 12 }}
-              background="secondarySystemBackground"
-              border={{ style: "separator", width: 0.75 }}
-              clipShape={{ type: "rect", cornerRadius: 16, style: "continuous" }}
+              frame={{ maxWidth: Infinity, alignment: "leading" }}
+              {...dashboardSurface(16)}
             >
               <Image
                 systemName="exclamationmark.triangle.fill"
-                font={13}
+                font={15}
                 foregroundStyle="systemRed"
               />
               <Text
-                font="caption1"
-                bold
-                foregroundStyle="systemRed"
+                font="subheadline"
+                foregroundStyle="label"
                 lineLimit={3}
                 frame={{ maxWidth: Infinity, alignment: "leading" }}
               >
@@ -2326,9 +2043,9 @@ function ConsoleView() {
 
           <VStack
             spacing={0}
-            padding={{ horizontal: 16, vertical: 14 }}
+            padding={{ horizontal: 18, vertical: 16 }}
             frame={{ maxWidth: Infinity, alignment: "leading" }}
-            {...dashboardSurface(20)}
+            {...dashboardSurface(22)}
           >
             <MonthlyTrafficOverview
               data={data}
@@ -2339,127 +2056,78 @@ function ConsoleView() {
           </VStack>
 
           {/* Section 1: ECS 实例状态 */}
-          <DashboardSectionHeader title="实例运行状态" detail={config.regionId} />
+          <DashboardSectionHeader title="实例" detail={config.regionId} />
 
           {/* 内容容器：纯白不透明（HIG 分层法则，卡片严禁玻璃叠玻璃） */}
           <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface()}>
             {/* 实例信息行 */}
-            <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
-              <ZStack
-                frame={{ width: 36, height: 36 }}
-                background="tertiarySystemFill"
-                clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
-              >
-                <Image
-                  systemName="server.rack"
-                  font={16}
-                  foregroundStyle="systemGreen"
-                />
-              </ZStack>
-              <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                <Text font="subheadline" bold foregroundStyle="label">
+            <HStack padding={{ horizontal: 16, vertical: 11 }} alignment="center" spacing={12}>
+              <IconTile systemName="server.rack" color="systemGreen" />
+              <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                <Text font="body" foregroundStyle="label">
                   ECS 云服务器
                 </Text>
-                <Text font="caption2" foregroundStyle="secondaryLabel" lineLimit={1}>
+                <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1}>
                   {config.ecsInstanceId}
                 </Text>
               </VStack>
-              {/* 运行状态胶囊 (双层呼吸微光雷达波纹发光圆点 + 动态语义色彩) */}
-              <HStack
-                padding={{ horizontal: 10, vertical: 5 }}
-                background={capsuleBg}
-                clipShape={{ type: "capsule" }}
-                spacing={6}
-                alignment="center"
-              >
-                <ZStack frame={{ width: 14, height: 14 }} alignment="center">
-                  <Circle fill={haloColor} frame={{ width: 14, height: 14 }} />
-                  <Circle fill={statusColor} frame={{ width: 7, height: 7 }} />
-                </ZStack>
-                <Text font={12} bold foregroundStyle={statusColor}>
+              <HStack spacing={6} alignment="center">
+                <Circle fill={statusColor} frame={{ width: 8, height: 8 }} />
+                <Text font="subheadline" foregroundStyle="secondaryLabel">
                   {statusLabel}
                 </Text>
               </HStack>
             </HStack>
 
-            <Divider padding={{ leading: 64 }} />
+            <Divider padding={{ leading: 58 }} />
 
-            {/* IP与地域行 (支持点击一键复制与触感反馈) */}
+            {/* IP 行：轻触复制 */}
             <Button
               action={handleCopyIp}
               buttonStyle="plain"
               accessibilityLabel="复制公网 IP 地址"
             >
-              <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={12}>
-                <ZStack
-                  frame={{ width: 36, height: 36 }}
-                  background="tertiarySystemFill"
-                  clipShape={{ type: "rect", cornerRadius: 9, style: "continuous" }}
-                >
-                  <Image
-                    systemName={isCopied ? "checkmark" : "network"}
-                    font={16}
-                    foregroundStyle={isCopied ? "systemGreen" : "systemBlue"}
-                  />
-                </ZStack>
-                <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                  <Text font="subheadline" bold foregroundStyle="label">
+              <HStack padding={{ horizontal: 16, vertical: 11 }} alignment="center" spacing={12}>
+                <IconTile systemName={isCopied ? "checkmark" : "network"} color={isCopied ? "systemGreen" : "systemBlue"} />
+                <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                  <Text font="body" foregroundStyle="label">
                     公网 IP 地址
                   </Text>
-                  <Text font="caption2" foregroundStyle={isCopied ? "systemGreen" : publicIpColor} lineLimit={1}>
-                    {isCopied ? "已复制到剪贴板 ✓" : publicIpLabel}
+                  <Text font="footnote" monospacedDigit foregroundStyle={isCopied ? "systemGreen" : publicIpColor === "systemBlue" ? "secondaryLabel" : publicIpColor} lineLimit={1}>
+                    {isCopied ? "已复制到剪贴板" : publicIpLabel}
                   </Text>
                 </VStack>
-                <HStack
-                  spacing={4}
-                  padding={{ horizontal: 8, vertical: 4 }}
-                  background={isCopied ? "rgba(52, 199, 89, 0.12)" : "rgba(142, 142, 147, 0.10)"}
-                  clipShape={{ type: "capsule" }}
-                  alignment="center"
-                >
-                  <Image
-                    systemName={isCopied ? "checkmark" : "doc.on.doc"}
-                    font={11}
-                    foregroundStyle={isCopied ? "systemGreen" : "secondaryLabel"}
-                  />
-                  <Text font={11} bold foregroundStyle={isCopied ? "systemGreen" : "secondaryLabel"}>
-                    {isCopied ? "已复制" : "复制"}
-                  </Text>
-                </HStack>
+                <Image
+                  systemName={isCopied ? "checkmark.circle.fill" : "doc.on.doc"}
+                  font={15}
+                  foregroundStyle={isCopied ? "systemGreen" : "systemBlue"}
+                />
               </HStack>
             </Button>
-
-            <Divider padding={{ horizontal: 16 }} />
-
           </VStack>
-          <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
-            ECS 状态来自阿里云只读查询；开关机与熔断由 VPS 脚本独立负责。
-          </Text>
+          <SectionFootnote>
+            状态来自阿里云只读查询；开关机与熔断由 VPS 脚本独立负责。
+          </SectionFootnote>
 
           {/* Section 2: 账户资产与实时费用 (Apple Wallet HIG Card) */}
           {data && (
             <>
-              <HStack padding={{ horizontal: 4, bottom: 2 }} alignment="center">
-                <Text font={15} fontWeight="semibold" foregroundStyle="label">
-                  账户资产与费用
-                </Text>
-                <Spacer />
-                <Button action={togglePrivacy} buttonStyle="plain" accessibilityLabel={isPrivacy ? "显示金额" : "隐藏金额"}>
-                  <HStack spacing={4} alignment="center">
-                    <Image
-                      systemName={isPrivacy ? "eye.slash.fill" : "eye.fill"}
-                      font={12}
-                      foregroundStyle="secondaryLabel"
-                    />
-                    <Text font={11} foregroundStyle="secondaryLabel">
-                      {isPrivacy ? "已隐藏" : "明细"}
-                    </Text>
-                  </HStack>
-                </Button>
-              </HStack>
+              <DashboardSectionHeader
+                title="账户与费用"
+                trailing={
+                  <Button action={togglePrivacy} buttonStyle="plain" accessibilityLabel={isPrivacy ? "显示金额" : "隐藏金额"}>
+                    <HStack spacing={4} alignment="center">
+                      <Image systemName={isPrivacy ? "eye.slash" : "eye"} font={13} foregroundStyle="systemBlue" />
+                      <Text font="footnote" foregroundStyle="systemBlue">
+                        {isPrivacy ? "显示" : "隐藏"}
+                      </Text>
+                    </HStack>
+                  </Button>
+                }
+              />
 
               <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface()}>
-                <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center">
+                <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="top">
                   {/* 可用现金余额 */}
                   <Button
                     action={handleShowBillHistory}
@@ -2469,7 +2137,7 @@ function ConsoleView() {
                   >
                     <VStack alignment="leading" spacing={4} frame={{ maxWidth: Infinity, alignment: "leading" }}>
                       <HStack alignment="center" spacing={4}>
-                        <Text font={12} foregroundStyle="secondaryLabel">
+                        <Text font="footnote" foregroundStyle="secondaryLabel">
                           账户现金余额
                         </Text>
                         <Image systemName="chevron.right" font={9} foregroundStyle="tertiaryLabel" />
@@ -2477,10 +2145,10 @@ function ConsoleView() {
                       {data.financialBalance ? (
                         <>
                           <HStack alignment="lastTextBaseline" spacing={3}>
-                            <Text font={14} bold foregroundStyle={data.financialBalance.status === "arrears" ? "systemRed" : "label"}>
+                            <Text font="headline" foregroundStyle={data.financialBalance.status === "arrears" ? "systemRed" : "label"}>
                               {currencySymbol(data.financialBalance.currency)}
                             </Text>
-                            <Text font={22} bold foregroundStyle={data.financialBalance.status === "arrears" ? "systemRed" : "label"} lineLimit={1} minScaleFactor={0.65}>
+                            <Text font={26} fontWeight="bold" monospacedDigit foregroundStyle={data.financialBalance.status === "arrears" ? "systemRed" : "label"} lineLimit={1} minScaleFactor={0.65}>
                               {isPrivacy ? "****" : data.financialBalance.availableCashAmount}
                             </Text>
                           </HStack>
@@ -2496,7 +2164,7 @@ function ConsoleView() {
                               frame={{ width: 6, height: 6 }}
                             />
                             <Text
-                              font={11}
+                              font="caption1"
                               foregroundStyle={
                                 data.financialBalance.status === "sufficient"
                                   ? "systemGreen"
@@ -2515,30 +2183,30 @@ function ConsoleView() {
                         </>
                       ) : (
                         <>
-                          <Text font={22} bold foregroundStyle="secondaryLabel">
+                          <Text font={26} fontWeight="bold" monospacedDigit foregroundStyle="secondaryLabel">
                             不可用
                           </Text>
-                          <Text font={11} foregroundStyle="systemOrange">
+                          <Text font="caption1" foregroundStyle="systemOrange">
                             余额查询不可用
                           </Text>
                         </>
                       )}
                     </VStack>
                   </Button>
-                  <Divider frame={{ height: 44 }} />
+                  <Divider frame={{ height: 56 }} />
 
                   {/* 当月账单查询结果 */}
                   <VStack alignment="leading" spacing={4} padding={{ leading: 16 }} frame={{ maxWidth: Infinity }}>
-                    <Text font={12} foregroundStyle="secondaryLabel">
+                    <Text font="footnote" foregroundStyle="secondaryLabel">
                       {financialBillPresentation.label}
                     </Text>
                     <HStack alignment="lastTextBaseline" spacing={3}>
                       {data.financialBillStatus === "available" && data.financialBill && (
-                        <Text font={14} bold foregroundStyle="label">
+                        <Text font="headline" foregroundStyle="label">
                           {currencySymbol(data.financialBill.currency)}
                         </Text>
                       )}
-                      <Text font={22} bold foregroundStyle="label">
+                      <Text font={26} fontWeight="bold" monospacedDigit foregroundStyle="label">
                         {data.financialBillStatus === "unavailable"
                           ? "不可用"
                           : !data.financialBill
@@ -2549,7 +2217,8 @@ function ConsoleView() {
                       </Text>
                     </HStack>
                     <Text
-                      font={11}
+                      font="caption1"
+                      lineLimit={2}
                       foregroundStyle={
                         data.financialBillStatus === "unavailable"
                           ? "systemOrange"
@@ -2571,11 +2240,11 @@ function ConsoleView() {
 
                 <Divider padding={{ horizontal: 16 }} />
 
-                <HStack padding={{ horizontal: 16, vertical: 13 }} alignment="center" spacing={12}>
-                  <Image systemName="calendar" font={16} foregroundStyle="secondaryLabel" frame={{ width: 28, height: 28 }} />
-                  <VStack alignment="leading" spacing={3} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                    <Text font="subheadline" foregroundStyle="label">上月已出账费用</Text>
-                    <Text font="caption2" foregroundStyle="secondaryLabel">
+                <HStack padding={{ horizontal: 16, vertical: 11 }} alignment="center" spacing={12}>
+                  <IconTile systemName="calendar" color="systemRed" />
+                  <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                    <Text font="body" foregroundStyle="label">上月已出账费用</Text>
+                    <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1} minScaleFactor={0.8}>
                       {data.previousFinancialBill?.billingCycle || "上一账期"} · {data.previousFinancialBillStatus === "available"
                         ? data.previousFinancialBill
                           ? "账号全部产品账单 · 出账可能延迟"
@@ -2583,7 +2252,7 @@ function ConsoleView() {
                         : "账单查询不可用"}
                     </Text>
                   </VStack>
-                  <Text font={19} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle="label">
+                  <Text font="body" monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle="secondaryLabel">
                     {data.previousFinancialBillStatus === "available" && data.previousFinancialBill
                       ? isPrivacy
                         ? "****"
@@ -2594,236 +2263,131 @@ function ConsoleView() {
                   </Text>
                 </HStack>
 
-                <Divider padding={{ horizontal: 16 }} />
+                <Divider padding={{ leading: 58 }} />
 
-                {/* ECS 与公网网络产品费用卡片（支持轻触查看每日产品账单分类） */}
-                <HStack padding={{ horizontal: 14, vertical: 10 }} spacing={10}>
-                  {/* ECS 产品费用微晶卡片 */}
-                  <Button
-                    action={handleShowEcsDaily}
-                    buttonStyle="plain"
-                    accessibilityLabel="查看 ECS 产品每日费用明细"
-                    frame={{ maxWidth: Infinity }}
-                  >
-                    <HStack
-                      padding={{ horizontal: 12, vertical: 8 }}
-                      background="tertiarySystemFill"
-                      clipShape={{ type: "rect", cornerRadius: 12, style: "continuous" }}
-                      frame={{ maxWidth: Infinity }}
-                      alignment="center"
-                      spacing={8}
-                    >
-                      <ZStack frame={{ width: 28, height: 28 }} background="secondarySystemFill" clipShape={{ type: "capsule" }}>
-                        <Image systemName="server.rack" font={12} foregroundStyle="systemBlue" />
-                      </ZStack>
-                      <VStack alignment="leading" spacing={1} frame={{ maxWidth: Infinity }}>
-                        <HStack alignment="center" spacing={3}>
-                          <Text font={11} foregroundStyle="secondaryLabel">ECS 产品</Text>
-                          <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
-                        </HStack>
-                        <Text font={14} bold foregroundStyle="label">
-                          {data.financialBillStatus === "unavailable"
-                            ? "—"
-                            : !data.financialBill
-                              ? "暂无"
-                              : isPrivacy
-                                ? "****"
-                                : `${currencySymbol(data.financialBill.currency)}${data.financialBill.ecsAmount}`}
-                        </Text>
-                      </VStack>
-                    </HStack>
-                  </Button>
+                {/* ECS 与公网网络产品费用（轻触查看每日分类） */}
+                <Button action={handleShowEcsDaily} buttonStyle="plain" accessibilityLabel="查看 ECS 产品每日费用明细" frame={{ maxWidth: Infinity }}>
+                  <HStack padding={{ horizontal: 16, vertical: 11 }} alignment="center" spacing={12} frame={{ maxWidth: Infinity }}>
+                    <IconTile systemName="server.rack" color="systemBlue" />
+                    <Text font="body" foregroundStyle="label" frame={{ maxWidth: Infinity, alignment: "leading" }}>ECS 产品</Text>
+                    <Text font="body" monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+                      {data.financialBillStatus === "unavailable"
+                        ? "—"
+                        : !data.financialBill
+                          ? "暂无"
+                          : isPrivacy
+                            ? "****"
+                            : `${currencySymbol(data.financialBill.currency)}${data.financialBill.ecsAmount}`}
+                    </Text>
+                    <Image systemName="chevron.right" font={13} fontWeight="semibold" foregroundStyle="tertiaryLabel" />
+                  </HStack>
+                </Button>
 
-                  {/* 公网网络产品费用微晶卡片 */}
-                  <Button
-                    action={handleShowEipDaily}
-                    buttonStyle="plain"
-                    accessibilityLabel="查看公网网络产品每日费用明细"
-                    frame={{ maxWidth: Infinity }}
-                  >
-                    <HStack
-                      padding={{ horizontal: 12, vertical: 8 }}
-                      background="tertiarySystemFill"
-                      clipShape={{ type: "rect", cornerRadius: 12, style: "continuous" }}
-                      frame={{ maxWidth: Infinity }}
-                      alignment="center"
-                      spacing={8}
-                    >
-                      <ZStack frame={{ width: 28, height: 28 }} background="secondarySystemFill" clipShape={{ type: "capsule" }}>
-                        <Image systemName="globe.asia.australia" font={12} foregroundStyle="systemIndigo" />
-                      </ZStack>
-                      <VStack alignment="leading" spacing={1} frame={{ maxWidth: Infinity }}>
-                        <HStack alignment="center" spacing={3}>
-                          <Text font={11} foregroundStyle="secondaryLabel">公网网络</Text>
-                          <Image systemName="chevron.right" font={8} foregroundStyle="tertiaryLabel" />
-                        </HStack>
-                        <Text font={14} bold foregroundStyle="label">
-                          {data.financialBillStatus === "unavailable"
-                            ? "—"
-                            : !data.financialBill
-                              ? "暂无"
-                              : isPrivacy
-                                ? "****"
-                                : `${currencySymbol(data.financialBill.currency)}${data.financialBill.eipAmount}`}
-                        </Text>
-                      </VStack>
-                    </HStack>
-                  </Button>
-                </HStack>
+                <Divider padding={{ leading: 58 }} />
+
+                <Button action={handleShowEipDaily} buttonStyle="plain" accessibilityLabel="查看公网网络产品每日费用明细" frame={{ maxWidth: Infinity }}>
+                  <HStack padding={{ horizontal: 16, vertical: 11 }} alignment="center" spacing={12} frame={{ maxWidth: Infinity }}>
+                    <IconTile systemName="globe.asia.australia" color="systemIndigo" />
+                    <Text font="body" foregroundStyle="label" frame={{ maxWidth: Infinity, alignment: "leading" }}>公网网络</Text>
+                    <Text font="body" monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+                      {data.financialBillStatus === "unavailable"
+                        ? "—"
+                        : !data.financialBill
+                          ? "暂无"
+                          : isPrivacy
+                            ? "****"
+                            : `${currencySymbol(data.financialBill.currency)}${data.financialBill.eipAmount}`}
+                    </Text>
+                    <Image systemName="chevron.right" font={13} fontWeight="semibold" foregroundStyle="tertiaryLabel" />
+                  </HStack>
+                </Button>
               </VStack>
-              <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
+              <SectionFootnote>
                 可用余额是当前账户资金；轻触余额查看近期账期费用，轻触产品查看最近每日分类。账单不代表余额扣款流水。
-              </Text>
+              </SectionFootnote>
             </>
           )}
 
           {/* Section 2: CDT 参考进度 */}
-          <HStack padding={{ horizontal: 4, bottom: 2 }} alignment="center">
-            <Text font={15} fontWeight="semibold" foregroundStyle="label">
-              用量详情
-            </Text>
-            <Spacer />
-            {data && (
-              <HStack
-                padding={{ horizontal: 8, vertical: 3 }}
-                background={data.totalGB >= cutoffReferenceGB
-                  ? "rgba(255, 59, 48, 0.10)"
-                  : data.totalGB >= cutoffReferenceGB - 15
-                    ? "rgba(255, 149, 0, 0.10)"
-                    : "rgba(52, 199, 89, 0.10)"}
-                clipShape={{ type: "capsule" }}
-              >
-                <Text font={12} bold foregroundStyle={data.totalGB >= cutoffReferenceGB
-                  ? "systemRed"
-                  : data.totalGB >= cutoffReferenceGB - 15
-                    ? "systemOrange"
-                    : "systemGreen"}>
-                  参考值进度 {data.percentage}%
-                </Text>
-              </HStack>
-            )}
-          </HStack>
+          <DashboardSectionHeader title="用量详情" detail={data ? `参考值进度 ${data.percentage}%` : undefined} />
 
-          {/* 内容容器：纯白不透明 */}
           <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface()}>
-            {/* 时间进度 vs 流量进度健康度提示 */}
             {data && healthMeta && (
-              <HStack
-                spacing={8}
-                alignment="top"
-                padding={{ horizontal: 16, top: 0, bottom: 14 }}
-              >
-                <Image
-                  systemName={healthMeta.icon}
-                  font={12}
-                  foregroundStyle={healthMeta.color}
-                />
-                <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                  <Text font={12} bold foregroundStyle={healthMeta.color} lineLimit={2}>
-                    {healthMeta.label}
-                  </Text>
-                  <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>
-                    已用 {formatCompactUsage(data.totalGB)} GB · VPS 参考线余 {formatCompactUsage(cutoffRemainingGB)} GB
-                  </Text>
-                </VStack>
-              </HStack>
-            )}
-
-            <Divider padding={{ horizontal: 16 }} />
-
-            {/* 三列指标卡片 (通透布局，去灰底，数值加粗大字号，内边距 16px) */}
-            {data ? (
-              <HStack padding={{ horizontal: 16, vertical: 16 }} alignment="top" spacing={0}>
-                {/* 本地月用量参考值余量或超出量 */}
-                <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
-                  <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1} frame={{ maxWidth: Infinity, alignment: "center" }}>
-                    {data.totalGB > data.thresholdGB
-                      ? "超出参考值"
-                      : data.totalGB === data.thresholdGB
-                        ? "达到参考值"
-                        : "参考值余量"}
-                  </Text>
-                  <VStack alignment="center" spacing={0} frame={{ maxWidth: Infinity }}>
-                    <Text
-                      font={18}
-                      bold
-                      foregroundStyle={data.totalGB > data.thresholdGB ? "systemRed" : "systemBlue"}
-                      lineLimit={1}
-                      frame={{ maxWidth: Infinity, alignment: "center" }}
-                    >
-                      {data.totalGB > data.thresholdGB
-                        ? `+${formatCompactUsage(data.totalGB - data.thresholdGB)}`
-                        : formatCompactUsage(data.remainingGB)}
+              <>
+                <HStack spacing={12} alignment="center" padding={{ horizontal: 16, vertical: 11 }}>
+                  <IconTile systemName={healthMeta.icon.replace(/\.(circle|octagon)\.fill$/, "")} color={healthMeta.color} />
+                  <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                    <Text font="body" foregroundStyle="label" lineLimit={2}>
+                      {healthMeta.label}
                     </Text>
-                    <Text
-                      font={11}
-                      bold
-                      foregroundStyle={data.totalGB > data.thresholdGB ? "systemRed" : "systemBlue"}
-                    >
-                      GB
+                    <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1} minScaleFactor={0.8}>
+                      已用 {formatCompactUsage(data.totalGB)} GB · VPS 参考线余 {formatCompactUsage(cutoffRemainingGB)} GB
                     </Text>
                   </VStack>
+                </HStack>
+                <Divider padding={{ leading: 58 }} />
+              </>
+            )}
+
+            {data ? (
+              <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={0}>
+                <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
+                  <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1}>
+                    {data.totalGB > data.thresholdGB ? "超出参考值" : data.totalGB === data.thresholdGB ? "达到参考值" : "参考值余量"}
+                  </Text>
+                  <HStack alignment="lastTextBaseline" spacing={2}>
+                    <Text font={22} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.7} foregroundStyle={data.totalGB > data.thresholdGB ? "systemRed" : "label"}>
+                      {data.totalGB > data.thresholdGB ? `+${formatCompactUsage(data.totalGB - data.thresholdGB)}` : formatCompactUsage(data.remainingGB)}
+                    </Text>
+                    <Text font="caption1" foregroundStyle="secondaryLabel">GB</Text>
+                  </HStack>
                 </VStack>
 
-                <Divider frame={{ height: 44 }} />
+                <Divider frame={{ height: 36 }} />
 
-                {/* 距结算重置 */}
                 <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
-                  <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1} frame={{ maxWidth: Infinity, alignment: "center" }}>
+                  <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1}>
                     距结算重置
                   </Text>
-                  <VStack alignment="center" spacing={0} frame={{ maxWidth: Infinity }}>
-                    <Text font={18} bold foregroundStyle="label" lineLimit={1} frame={{ maxWidth: Infinity, alignment: "center" }}>
+                  <HStack alignment="lastTextBaseline" spacing={2}>
+                    <Text font={22} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.7} foregroundStyle="label">
                       {data.daysRemaining}
                     </Text>
-                    <Text font={11} bold foregroundStyle="secondaryLabel">
-                      天
-                    </Text>
-                  </VStack>
+                    <Text font="caption1" foregroundStyle="secondaryLabel">天</Text>
+                  </HStack>
                 </VStack>
 
-                <Divider frame={{ height: 44 }} />
+                <Divider frame={{ height: 36 }} />
 
-                {/* 日均参考 */}
                 <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
-                  <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1} frame={{ maxWidth: Infinity, alignment: "center" }}>
+                  <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1}>
                     日均参考
                   </Text>
-                  <VStack alignment="center" spacing={0} frame={{ maxWidth: Infinity }}>
-                    <Text font={20} bold foregroundStyle={data.color}>
+                  <HStack alignment="lastTextBaseline" spacing={2}>
+                    <Text font={22} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.7} foregroundStyle="label">
                       &lt; {formatCompactUsage(Number(data.dailyBudgetGB))}
                     </Text>
-                    <Text font={11} bold foregroundStyle={data.color}>
-                      GB
-                    </Text>
-                  </VStack>
+                    <Text font="caption1" foregroundStyle="secondaryLabel">GB</Text>
+                  </HStack>
                 </VStack>
               </HStack>
             ) : (
               <HStack padding={16} alignment="center">
-                <Text font="caption2" foregroundStyle="secondaryLabel">
+                <Text font="footnote" foregroundStyle="secondaryLabel">
                   正在同步阿里云最新用量数据...
                 </Text>
               </HStack>
             )}
           </VStack>
-          <HStack alignment="top" spacing={8} padding={{ leading: 8, bottom: 4 }}>
-            <Image systemName="antenna.radiowaves.left.and.right" font={12} foregroundStyle="systemBlue" />
-            <Text
-              font={12}
-              foregroundStyle="secondaryLabel"
-              lineLimit={3}
-              frame={{ maxWidth: Infinity, alignment: "leading" }}
-            >
-              VPS 独立负责实例保活与熔断，手机只读展示。流量余量和进度按本地月用量参考值计算，不代表阿里云账号维度的完整免费额度余额。
-            </Text>
-          </HStack>
+          <SectionFootnote>
+            VPS 独立负责实例保活与熔断，手机只读展示。流量余量和进度按本地月用量参考值计算，不代表阿里云账号维度的完整免费额度余额。
+          </SectionFootnote>
 
           {data?.trafficDiagnostics && (
             <>
               <DashboardSectionHeader title="CDT 地域额度" detail="只读 · 按地域映射" />
-              <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface(16)}>
-                {(["mainland", "nonMainland", "unknown"] as CDTTrafficBucket[]).map(bucket => {
+              <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface()}>
+                {(["mainland", "nonMainland", "unknown"] as CDTTrafficBucket[]).map((bucket, index) => {
                   const summary = data.trafficDiagnostics!.buckets[bucket]
                   const label = bucket === "mainland"
                     ? "内地 · 20 GB参考线"
@@ -2831,61 +2395,60 @@ function ConsoleView() {
                       ? "非内地 · 200 GB参考线"
                       : "未识别 · 不套额度"
                   return (
-                    <HStack key={bucket} padding={{ horizontal: 16, vertical: 10 }} alignment="center">
-                      <Text font={12} foregroundStyle="secondaryLabel">{label}</Text>
-                      <Spacer />
-                      <Text font={12} bold foregroundStyle="label">
-                        {summary.totalGB.toFixed(2)} GB
-                        {bucket !== "unknown" ? ` / ${bucket === "mainland" ? 20 : 200} GB` : ""}
-                        {" · "}{summary.itemCount} 条
-                      </Text>
-                    </HStack>
+                    <VStack key={bucket} spacing={0}>
+                      {index > 0 && <Divider padding={{ leading: 16 }} />}
+                      <HStack padding={{ horizontal: 16, vertical: 11 }} alignment="center">
+                        <Text font="body" foregroundStyle="label" lineLimit={1}>{label}</Text>
+                        <Spacer />
+                        <Text font="subheadline" monospacedDigit foregroundStyle="secondaryLabel" lineLimit={1} minScaleFactor={0.75}>
+                          {summary.totalGB.toFixed(2)} GB
+                          {bucket !== "unknown" ? ` / ${bucket === "mainland" ? 20 : 200} GB` : ""}
+                          {" · "}{summary.itemCount} 条
+                        </Text>
+                      </HStack>
+                    </VStack>
                   )
                 })}
                 {data.trafficDiagnostics.groups.slice(0, 6).map((group, index) => (
-                  <VStack key={`${group.bucket}-${group.businessRegionId || "none"}-${group.ispType || "none"}-${index}`} alignment="leading" spacing={2} padding={{ horizontal: 16, vertical: 8 }}>
-                    <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>
-                      BusinessRegionId: {group.businessRegionId || "未返回"} · ISPType: {group.ispType || "未返回"}
-                    </Text>
-                    <Text font={12} bold foregroundStyle="label">
-                      {group.bucket === "mainland"
-                        ? "内地分组"
-                        : group.bucket === "nonMainland"
-                          ? "非内地分组"
-                          : "未识别分组"} · {group.totalGB.toFixed(2)} GB
-                    </Text>
+                  <VStack key={`${group.bucket}-${group.businessRegionId || "none"}-${group.ispType || "none"}-${index}`} spacing={0}>
+                    <Divider padding={{ leading: 16 }} />
+                    <VStack alignment="leading" spacing={2} padding={{ horizontal: 16, vertical: 9 }} frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                      <Text font="subheadline" foregroundStyle="label">
+                        {group.bucket === "mainland"
+                          ? "内地分组"
+                          : group.bucket === "nonMainland"
+                            ? "非内地分组"
+                            : "未识别分组"} · {group.totalGB.toFixed(2)} GB
+                      </Text>
+                      <Text font="caption1" foregroundStyle="secondaryLabel" lineLimit={1} minScaleFactor={0.8}>
+                        BusinessRegionId: {group.businessRegionId || "未返回"} · ISPType: {group.ispType || "未返回"}
+                      </Text>
+                    </VStack>
                   </VStack>
                 ))}
               </VStack>
-              <Text font={11} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 4 }}>
+              <SectionFootnote>
                 已按 BusinessRegionId 映射；未知值保留为未识别，不计入内地 20 GB 或非内地 200 GB。
-              </Text>
+              </SectionFootnote>
             </>
           )}
 
           {/* Section 3: 控制台实时操作日志 */}
-          <HStack padding={{ horizontal: 4, bottom: 2 }} alignment="center">
-            <Text font={15} fontWeight="semibold" foregroundStyle="label">
-              最近活动
-            </Text>
-            <Spacer />
-            <Button
-              action={() => setLogs([])}
-              disabled={logs.length === 0}
-              buttonStyle="glass"
-              accessibilityLabel="清空日志"
-            >
-              <HStack
-                spacing={4}
-                alignment="center"
+          <DashboardSectionHeader
+            title="最近活动"
+            trailing={
+              <Button
+                action={() => setLogs([])}
+                disabled={logs.length === 0}
+                buttonStyle="plain"
+                accessibilityLabel="清空日志"
               >
-                <Image systemName="trash" font={11} foregroundStyle="secondaryLabel" />
-                <Text font={11} bold foregroundStyle="secondaryLabel">
+                <Text font="footnote" foregroundStyle={logs.length === 0 ? "tertiaryLabel" : "systemBlue"}>
                   清空
                 </Text>
-              </HStack>
-            </Button>
-          </HStack>
+              </Button>
+            }
+          />
 
           {/* 日志容器：少量内容收缩，超过五行才使用固定视口滚动 */}
           <VStack
@@ -2900,13 +2463,12 @@ function ConsoleView() {
                   logs.map((entry, index) => {
                     const parts = splitLogLine(entry.line)
                     return (
-                      <HStack key={index} spacing={6} alignment="top" frame={{ maxWidth: Infinity, alignment: "leading" }}>
-                        <Text font={11} foregroundStyle="tertiaryLabel">•</Text>
-                        <Text font={11} foregroundStyle="tertiaryLabel">
+                      <HStack key={index} spacing={8} alignment="firstTextBaseline" frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                        <Text font="caption1" monospacedDigit foregroundStyle="tertiaryLabel">
                           {parts.time}
                         </Text>
                         <Text
-                          font={12}
+                          font="footnote"
                           foregroundStyle={logMessageColor(entry.line)}
                           lineLimit={2}
                           frame={{ maxWidth: Infinity, alignment: "leading" }}
@@ -2917,23 +2479,19 @@ function ConsoleView() {
                     )
                   })
                 ) : (
-                  <Text font={12} foregroundStyle="secondaryLabel">
+                  <Text font="footnote" foregroundStyle="secondaryLabel">
                     暂无日志，点击刷新同步。
                   </Text>
                 )}
               </VStack>
             </ScrollView>
           </VStack>
-          <Text font={12} foregroundStyle="secondaryLabel" padding={{ leading: 8, bottom: 8 }}>
-            最近 8 条操作记录
-          </Text>
+          <SectionFootnote>最近 8 条操作记录</SectionFootnote>
 
           {/* 版本与构建信息 */}
-          <VStack alignment="center" spacing={2} padding={{ top: 8, bottom: 20 }}>
-            <Text font={11} foregroundStyle="quaternaryLabel">
-              Aliyun CDT Monitor v{APP_VERSION}
-            </Text>
-          </VStack>
+          <Text font="caption1" foregroundStyle="tertiaryLabel" frame={{ maxWidth: Infinity, alignment: "center" }} padding={{ top: 12 }}>
+            Aliyun CDT Monitor v{APP_VERSION}
+          </Text>
           </VStack>
         </ScrollView>
       </ZStack>
