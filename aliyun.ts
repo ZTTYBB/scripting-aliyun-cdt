@@ -4,7 +4,7 @@
  */
 import { AppConfig, DEFAULT_CONFIG } from "./config"
 import { isBillQueryAvailable, queryAccountBillPages, recentBillingDates } from "./bill_queries"
-import { withRequestTimeout } from "./monitor_runtime"
+import { aliyunHttpError, chinaMonthKey, normalizeEcsStatus, usagePercentage, withRequestTimeout } from "./monitor_runtime"
 
 // ==================== 1. 纯 TS HMAC-SHA1 算法实现 ====================
 
@@ -186,8 +186,7 @@ export async function aliyunRequest<T = any>(
         signal
       })
     if (!response.ok) {
-      const errorText = await response.text()
-      throw new Error(`Aliyun API [${options.action}] Error (${response.status}): ${errorText}`)
+      throw aliyunHttpError(options.action, response.status, await response.text())
     }
     return (await response.json()) as T
   }, options.action)
@@ -449,11 +448,11 @@ export class AliyunService {
     const trafficDiagnostics = buildCDTTrafficDiagnostics(details)
     const totalBytes = details.reduce((sum, item) => sum + trafficBytes(item.Traffic), 0)
     const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
-    const thresholdGB = this.config.trafficThresholdGB
+    const thresholdGB = this.config.trafficThresholdGB > 0 ? this.config.trafficThresholdGB : DEFAULT_CONFIG.trafficThresholdGB
     const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
-    const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
+    const percentage = usagePercentage(totalGB, thresholdGB)
 
-    const cutoffReferenceGB = this.config.vpsCutoffReferenceGB
+    const cutoffReferenceGB = this.config.vpsCutoffReferenceGB > 0 ? this.config.vpsCutoffReferenceGB : DEFAULT_CONFIG.vpsCutoffReferenceGB
     let statusLevel: "normal" | "warning" | "danger" = "normal"
     if (totalGB >= cutoffReferenceGB) {
       statusLevel = "danger"
@@ -506,7 +505,7 @@ export class AliyunService {
 
     return {
       instanceId: instance.InstanceId,
-      status: (instance.Status as ECSStatus) || "Unknown",
+      status: normalizeEcsStatus(instance.Status) as ECSStatus,
       publicIp: getInstancePublicIp(instance),
       instanceName: instance.InstanceName
     }
@@ -557,7 +556,7 @@ export class AliyunService {
   async getMonthlyBill(): Promise<MonthlyBillInfo | null> {
     try {
       const now = new Date()
-      const cycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+      const cycle = chinaMonthKey(now)
 
       // 1. 优先调用 QueryBillOverview（官方控制台账单总览对齐，按产品维度直接汇总，确保 ECS/EIP 精确识别）
       let items: Array<{

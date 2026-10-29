@@ -27,14 +27,23 @@ import {
   Button,
   Spacer,
   Divider,
-  TextField,
-  Toolbar,
-  ToolbarItem,
   useState,
   useEffect,
   useCallback
 } from "scripting"
-import { assertSampleBillingMonth, createRefreshGate, createSnapshot, readSnapshot, recordTrafficSample, withRequestTimeout } from "./monitor_runtime"
+import {
+  aliyunHttpError,
+  assertSampleBillingMonth,
+  chinaMonthKey,
+  chinaMonthProgress,
+  createRefreshGate,
+  createSnapshot,
+  normalizeEcsStatus,
+  readSnapshot,
+  recordTrafficSample,
+  usagePercentage,
+  withRequestTimeout
+} from "./monitor_runtime"
 import { isBillQueryAvailable, queryAccountBillPages, recentBillingDates } from "./bill_queries"
 
 // ==================== 1. 本地存储配置管理 ====================
@@ -252,8 +261,7 @@ async function aliyunRequest<T = any>(
       ...(signal ? { signal } : {})
     })
     if (!response.ok) {
-      const err = await response.text()
-      throw new Error(`Aliyun [${action}] 错误 (${response.status}): ${err}`)
+      throw aliyunHttpError(action, response.status, await response.text())
     }
     return (await response.json()) as T
   }, action)
@@ -594,7 +602,7 @@ function getInstancePublicIp(instance?: ECSInstanceRecord): string | undefined {
 
 async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   const trafficSampledAt = new Date()
-  // 1. 查询 CDT 流量
+  // 1. 查询 CDT 流量（必须成功，其余查询都依赖它确认凭据可用）
   const cdtData = await aliyunRequest<{
     TrafficDetails?: CDTTrafficDetail[]
   }>("cdt.aliyuncs.com", "ListCdtInternetTraffic", "2021-08-13", config)
@@ -604,224 +612,162 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
   const trafficDiagnostics = buildCDTTrafficDiagnostics(details)
   const totalBytes = details.reduce((sum, item) => sum + trafficBytes(item.Traffic), 0)
   const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
-  const thresholdGB = config.trafficThresholdGB
-  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
+  const thresholdGB = config.trafficThresholdGB > 0 ? config.trafficThresholdGB : DEFAULT_CONFIG.trafficThresholdGB
+  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB > 0 ? config.vpsCutoffReferenceGB : DEFAULT_CONFIG.vpsCutoffReferenceGB
   const cutoffRemainingGB = Math.max(0, Number((vpsCutoffReferenceGB - totalGB).toFixed(2)))
   const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
-  const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
+  const percentage = usagePercentage(totalGB, thresholdGB)
 
-  // 2. 查询 ECS 状态；失败时仍保留已成功获取的 CDT 用量。
-  let ecsStatus: ConsoleData["ecsStatus"] = "Unknown"
-  let publicIp: string | undefined
-  try {
-    const ecsData = await aliyunRequest<{
-      Instances?: {
-        Instance?: ECSInstanceRecord[]
-      }
-    }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
-      InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
-      RegionId: config.regionId.trim()
-    })
-
-    const instance = ecsData.Instances?.Instance?.[0]
-    ecsStatus = (instance?.Status as ConsoleData["ecsStatus"]) || "Unknown"
-    publicIp = getInstancePublicIp(instance)
-  } catch {}
-
-  // 3. 纯统计模式：控制台仅只读拉取用量与账单，关机熔断由 VPS 独立守护
-
-  // 4. 重置日与时间进度推算
+  // 2. 重置日与时间进度推算（按阿里云账期所用的北京时间）
   const now = trafficSampledAt
-  const currentDay = now.getDate()
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
-  const daysRemaining = Math.max(1, lastDay - currentDay + 1)
-  const dailyBudgetGB = (remainingGB / daysRemaining).toFixed(1)
-  const monthTimeProgress = Math.min(100, Math.max(1, Number(((currentDay / lastDay) * 100).toFixed(1))))
+  const { daysRemaining, monthTimeProgress } = chinaMonthProgress(now)
+  const dailyBudgetGB = (remainingGB / daysRemaining).toFixed(2)
+  const cycle = chinaMonthKey(now)
+  const previousCycle = chinaMonthKey(now, -1)
 
-  // 5. 资产与消费查询 (优雅降级，未授权时不中断主流程)
-  let financialBalance: AccountBalanceInfo | null = null
-  let financialBill: MonthlyBillInfo | null = null
-  let financialBillStatus: "available" | "unavailable" = "unavailable"
-  let previousFinancialBill: MonthlyBillInfo | null = null
-  let previousFinancialBillStatus: "available" | "unavailable" = "unavailable"
-  let financialBillHistory: MonthlyBillHistoryItem[] = []
-
-  try {
-    const balRes = await aliyunRequest<{
-      Data?: {
-        AvailableAmount?: string
-        AvailableCashAmount?: string
-        CreditAmount?: string
-        Currency?: string
-      }
-    }>("business.aliyuncs.com", "QueryAccountBalance", "2017-12-14", config).catch(() => null)
-
-    if (balRes?.Data) {
-      const availableAmount = parseFloat(balRes.Data.AvailableAmount || "0")
-      const cash = parseFloat(balRes.Data.AvailableCashAmount || "0")
-      let status: "sufficient" | "low" | "arrears" = "sufficient"
-      if (availableAmount < 0) {
-        status = "arrears"
-      } else if (cash < 10) {
-        status = "low"
-      }
-      financialBalance = {
-        availableAmount: balRes.Data.AvailableAmount || "0.00",
-        availableCashAmount: balRes.Data.AvailableCashAmount || "0.00",
-        currency: balRes.Data.Currency || "CNY",
-        status
-      }
+  // 3. 其余查询互不依赖，并行发出；任何一项失败都不影响流量展示。
+  const ecsTask = aliyunRequest<{
+    Instances?: {
+      Instance?: ECSInstanceRecord[]
     }
-  } catch {}
+  }>(`ecs.${config.regionId}.aliyuncs.com`, "DescribeInstances", "2014-05-26", config, {
+    InstanceIds: JSON.stringify([config.ecsInstanceId.trim()]),
+    RegionId: config.regionId.trim()
+  }).catch(() => null)
 
-  try {
-    const cycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+  const balanceTask = aliyunRequest<{
+    Data?: {
+      AvailableAmount?: string
+      AvailableCashAmount?: string
+      CreditAmount?: string
+      Currency?: string
+    }
+  }>("business.aliyuncs.com", "QueryAccountBalance", "2017-12-14", config).catch(() => null)
 
-    const monthResult = await queryBillItemsForCycle(config, cycle)
-    const billItems = monthResult.items
-    financialBillStatus = monthResult.available ? "available" : "unavailable"
+  const cycleTask = (billingCycle: string) => queryBillItemsForCycle(config, billingCycle).catch(() => null)
+  const currentTask = cycleTask(cycle)
+  const previousTask = cycleTask(previousCycle)
+  const olderCycles = [chinaMonthKey(now, -2), chinaMonthKey(now, -3)]
+  const olderTasks = olderCycles.map(cycleTask)
 
-      const currentSummary = summarizeBillItems(billItems)
-      const finalPayment = currentSummary.paymentAmount
-      const canQueryDailyBill = financialBillStatus === "available"
+  const formatDaily = (amt: number): string => {
+    if (amt <= 0) return "0.00"
+    if (amt < 0.01) return amt.toFixed(3)
+    return amt.toFixed(2)
+  }
 
-      const formatDaily = (amt: number): string => {
-        if (amt <= 0) return "0.00"
-        if (amt < 0.01) return amt.toFixed(3)
-        return amt.toFixed(2)
-      }
-
-      // 仅在账单总览或回退接口已确认可用后，才查询每日产品账单分类。
-      const ecsDailyList: DailyExpenseItem[] = []
-      const eipDailyList: DailyExpenseItem[] = []
-      const dateQueries = recentBillingDates(now)
-
+  // 仅在账单总览或回退接口已确认可用后，才查询每日产品账单分类。
+  const dailyTask = currentTask.then(async monthResult => {
+    const dateQueries = recentBillingDates(now)
+    if (!monthResult?.available) return null
+    return Promise.all(dateQueries.map(async q => {
       try {
-        const dailyResults = await Promise.all(
-          (canQueryDailyBill ? dateQueries : []).map(async q => {
-            try {
-              const dayResult = await queryAccountBillPages(
-                params => aliyunRequest("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, params),
-                {
-                  BillingCycle: q.billingCycle,
-                  Granularity: "DAILY",
-                  BillingDate: q.dateStr,
-                  IsGroupByProduct: true
-                }
-              )
-              const dayItems = dayResult.items
-              let dEcs = 0
-              let dEip = 0
-              for (const it of dayItems) {
-                const c = String(it.PipCode || it.ProductCode || "").toLowerCase()
-                const n = String(it.ProductName || "")
-                const p = Number(it.PaymentAmount || 0)
-                const g = Number(it.PretaxGrossAmount || 0)
-                // 优先取 PretaxAmount（抢占式实例实际折后金额）
-                let eff = 0
-                if (it.PretaxAmount !== undefined && it.PretaxAmount !== null && it.PretaxAmount !== "") {
-                  eff = Number(it.PretaxAmount) || 0
-                } else if (it.PaymentAmount !== undefined && it.PaymentAmount !== null && it.PaymentAmount !== "") {
-                  eff = p
-                } else {
-                  eff = g
-                }
-
-                if (c === "ecs" || c.includes("ecs") || n.includes("云服务器") || n.includes("ECS")) {
-                  dEcs += eff
-                } else if (
-                  c === "eip" ||
-                  c === "cbwp" ||
-                  c.includes("eip") ||
-                  c.includes("cbwp") ||
-                  n.includes("弹性公网") ||
-                  n.includes("EIP") ||
-                  n.includes("公网IP") ||
-                  n.includes("共享带宽")
-                ) {
-                  dEip += eff
-                }
-              }
-              return {
-                date: q.displayDate,
-                isToday: q.isToday,
-                ecsAmount: formatDaily(dEcs),
-                eipAmount: formatDaily(dEip),
-                settled: dayItems.length > 0,
-                available: dayResult.available
-              }
-            } catch {
-              return {
-                date: q.displayDate,
-                isToday: q.isToday,
-                ecsAmount: "0.00",
-                eipAmount: "0.00",
-                settled: false,
-                available: false
-              }
-            }
-          })
+        const dayResult = await queryAccountBillPages(
+          params => aliyunRequest("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, params),
+          {
+            BillingCycle: q.billingCycle,
+            Granularity: "DAILY",
+            BillingDate: q.dateStr,
+            IsGroupByProduct: true
+          }
         )
-
-        for (const r of dailyResults) {
-          ecsDailyList.push({ date: r.date, amount: r.ecsAmount, isToday: r.isToday, settled: r.settled, available: r.available })
-          eipDailyList.push({ date: r.date, amount: r.eipAmount, isToday: r.isToday, settled: r.settled, available: r.available })
+        const summary = summarizeBillItems(dayResult.items)
+        return {
+          date: q.displayDate,
+          isToday: q.isToday,
+          ecsAmount: formatDaily(summary.ecsAmount),
+          eipAmount: formatDaily(summary.eipAmount),
+          settled: dayResult.items.length > 0,
+          available: dayResult.available
         }
       } catch {
-        for (const q of dateQueries) {
-          ecsDailyList.push({ date: q.displayDate, amount: "0.00", isToday: q.isToday, settled: false, available: false })
-          eipDailyList.push({ date: q.displayDate, amount: "0.00", isToday: q.isToday, settled: false, available: false })
-        }
+        return { date: q.displayDate, isToday: q.isToday, ecsAmount: "0.00", eipAmount: "0.00", settled: false, available: false }
       }
+    }))
+  })
 
-    if (canQueryDailyBill) {
-      financialBill = {
-        billingCycle: cycle,
-        paymentAmount: finalPayment.toFixed(2),
-        hasRecords: billItems.length > 0,
-        paymentScope: currentSummary.paymentScope,
-        outstandingAmount: currentSummary.outstandingAmount.toFixed(2),
-        currency: currentSummary.currency,
-        ecsAmount: currentSummary.ecsAmount.toFixed(2),
-        eipAmount: currentSummary.eipAmount.toFixed(2),
-        cdtAmount: currentSummary.cdtAmount.toFixed(2),
-        ecsDailyList,
-        eipDailyList
-      }
+  const [ecsData, balRes, monthResult, previousResult, dailyResults, ...olderResults] = await Promise.all([
+    ecsTask,
+    balanceTask,
+    currentTask,
+    previousTask,
+    dailyTask.catch(() => null),
+    ...olderTasks
+  ])
+
+  const instance = ecsData?.Instances?.Instance?.[0]
+  const ecsStatus: ConsoleData["ecsStatus"] = normalizeEcsStatus(instance?.Status)
+  const publicIp = getInstancePublicIp(instance)
+
+  let financialBalance: AccountBalanceInfo | null = null
+  if (balRes?.Data) {
+    const cash = parseFloat(balRes.Data.AvailableCashAmount || "0")
+    const availableAmount = parseFloat(balRes.Data.AvailableAmount || "")
+    let status: "sufficient" | "low" | "arrears" = "sufficient"
+    if (Number.isFinite(availableAmount) && availableAmount < 0) {
+      status = "arrears"
+    } else if (cash < 10) {
+      status = "low"
     }
-  } catch {}
+    financialBalance = {
+      availableAmount: balRes.Data.AvailableAmount || "0.00",
+      availableCashAmount: balRes.Data.AvailableCashAmount || "0.00",
+      currency: balRes.Data.Currency || "CNY",
+      status
+    }
+  }
+
+  // 所有账期统一按同一口径（监控产品；未识别到监控产品时为全部产品）汇总，便于逐月对比。
+  const financialBillStatus: "available" | "unavailable" = monthResult?.available ? "available" : "unavailable"
+  let financialBill: MonthlyBillInfo | null = null
+  if (monthResult?.available) {
+    const currentSummary = summarizeBillItems(monthResult.items)
+    const ecsDailyList: DailyExpenseItem[] = []
+    const eipDailyList: DailyExpenseItem[] = []
+    const rows = dailyResults || recentBillingDates(now).map(q => ({
+      date: q.displayDate, isToday: q.isToday, ecsAmount: "0.00", eipAmount: "0.00", settled: false, available: false
+    }))
+    for (const r of rows) {
+      ecsDailyList.push({ date: r.date, amount: r.ecsAmount, isToday: r.isToday, settled: r.settled, available: r.available })
+      eipDailyList.push({ date: r.date, amount: r.eipAmount, isToday: r.isToday, settled: r.settled, available: r.available })
+    }
+    financialBill = {
+      billingCycle: cycle,
+      paymentAmount: currentSummary.paymentAmount.toFixed(2),
+      hasRecords: monthResult.items.length > 0,
+      paymentScope: currentSummary.paymentScope,
+      outstandingAmount: currentSummary.outstandingAmount.toFixed(2),
+      currency: currentSummary.currency,
+      ecsAmount: currentSummary.ecsAmount.toFixed(2),
+      eipAmount: currentSummary.eipAmount.toFixed(2),
+      cdtAmount: currentSummary.cdtAmount.toFixed(2),
+      ecsDailyList,
+      eipDailyList
+    }
+  }
 
   // 账期已结束的上月金额单独查询。余额接口不会返回扣费历史，不能用余额变化代替账单。
-  try {
-    const previousDate = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-    const previousCycle = `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, "0")}`
-    const previousResult = await queryBillItemsForCycle(config, previousCycle)
-    const previousItems = previousResult.items
-    previousFinancialBillStatus = previousResult.available ? "available" : "unavailable"
-
-    if (previousFinancialBillStatus === "available" && previousItems.length > 0) {
-      const summary = summarizeBillItems(previousItems, true)
-      previousFinancialBill = {
-        billingCycle: previousCycle,
-        paymentAmount: summary.paymentAmount.toFixed(2),
-        paymentScope: summary.paymentScope,
-        outstandingAmount: summary.outstandingAmount.toFixed(2),
-        currency: summary.currency,
-        ecsAmount: summary.ecsAmount.toFixed(2),
-        eipAmount: summary.eipAmount.toFixed(2),
-        cdtAmount: summary.cdtAmount.toFixed(2),
-        ecsDailyList: [],
-        eipDailyList: []
-      }
+  const previousFinancialBillStatus: "available" | "unavailable" = previousResult?.available ? "available" : "unavailable"
+  let previousFinancialBill: MonthlyBillInfo | null = null
+  if (previousResult?.available && previousResult.items.length > 0) {
+    const summary = summarizeBillItems(previousResult.items)
+    previousFinancialBill = {
+      billingCycle: previousCycle,
+      paymentAmount: summary.paymentAmount.toFixed(2),
+      paymentScope: summary.paymentScope,
+      outstandingAmount: summary.outstandingAmount.toFixed(2),
+      currency: summary.currency,
+      ecsAmount: summary.ecsAmount.toFixed(2),
+      eipAmount: summary.eipAmount.toFixed(2),
+      cdtAmount: summary.cdtAmount.toFixed(2),
+      ecsDailyList: [],
+      eipDailyList: []
     }
-  } catch {}
+  }
 
-  // 余额卡片点击后展示最近几个账期。当前月和上月复用上面的查询结果，
-  // 只额外查询更早的两个账期，避免每次刷新重复请求同一月份。
-  const currentCycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
-  financialBillHistory = [
+  const financialBillHistory: MonthlyBillHistoryItem[] = [
     {
-      billingCycle: currentCycle,
+      billingCycle: cycle,
       paymentAmount: financialBill?.paymentAmount || "0.00",
       currency: financialBill?.currency || financialBalance?.currency || "CNY",
       available: financialBillStatus === "available",
@@ -829,42 +775,26 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
       paymentScope: financialBill?.paymentScope
     },
     {
-      billingCycle: previousFinancialBill?.billingCycle || (() => {
-        const previousDate = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-        return `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, "0")}`
-      })(),
+      billingCycle: previousCycle,
       paymentAmount: previousFinancialBill?.paymentAmount || "0.00",
       currency: previousFinancialBill?.currency || financialBalance?.currency || "CNY",
       available: previousFinancialBillStatus === "available",
       hasRecords: Boolean(previousFinancialBill),
       paymentScope: previousFinancialBill?.paymentScope
-    }
-  ]
-
-  for (const monthOffset of [2, 3]) {
-    const historyDate = new Date(now.getFullYear(), now.getMonth() - monthOffset, 1)
-    const billingCycle = `${historyDate.getFullYear()}-${String(historyDate.getMonth() + 1).padStart(2, "0")}`
-    try {
-      const result = await queryBillItemsForCycle(config, billingCycle)
-      const summary = result.items.length > 0 ? summarizeBillItems(result.items, true) : null
-      financialBillHistory.push({
+    },
+    ...olderCycles.map((billingCycle, index) => {
+      const result = olderResults[index]
+      const summary = result && result.items.length > 0 ? summarizeBillItems(result.items) : null
+      return {
         billingCycle,
         paymentAmount: summary ? summary.paymentAmount.toFixed(2) : "0.00",
         currency: summary?.currency || financialBalance?.currency || "CNY",
-        available: result.available,
-        hasRecords: result.items.length > 0,
+        available: Boolean(result?.available),
+        hasRecords: Boolean(result && result.items.length > 0),
         paymentScope: summary?.paymentScope
-      })
-    } catch {
-      financialBillHistory.push({
-        billingCycle,
-        paymentAmount: "0.00",
-        currency: financialBalance?.currency || "CNY",
-        available: false,
-        hasRecords: false
-      })
-    }
-  }
+      }
+    })
+  ]
 
   const color = totalGB >= vpsCutoffReferenceGB
     ? "systemRed"
@@ -902,15 +832,19 @@ function getTrafficHealthMeta(totalGB: number, cutoffReferenceGB: number, percen
   icon: string
 } {
   if (totalGB >= cutoffReferenceGB) {
-    return { label: "已达到 VPS 熔断参考线（仅展示）", color: "systemRed", icon: "exclamationmark.octagon.fill" }
+    return { label: `已达到 VPS 熔断参考线 ${cutoffReferenceGB} GB（仅展示）`, color: "systemRed", icon: "exclamationmark.octagon.fill" }
   }
   if (totalGB >= cutoffReferenceGB - 15) {
-    return { label: "接近 VPS 熔断参考线（仅展示）", color: "systemOrange", icon: "exclamationmark.circle.fill" }
+    return {
+      label: `接近 VPS 熔断参考线 ${cutoffReferenceGB} GB，余 ${Math.max(0, cutoffReferenceGB - totalGB).toFixed(1)} GB（仅展示）`,
+      color: "systemOrange",
+      icon: "exclamationmark.circle.fill"
+    }
   }
   if (percentage > monthTimeProgress + 15) {
-    return { label: "月用量参考进度超前", color: "systemOrange", icon: "exclamationmark.circle.fill" }
+    return { label: "用量进度快于本月时间进度", color: "systemOrange", icon: "exclamationmark.circle.fill" }
   }
-  return { label: "月用量处于本地参考进度内", color: "systemGreen", icon: "checkmark.circle.fill" }
+  return { label: "用量进度正常", color: "systemGreen", icon: "checkmark.circle.fill" }
 }
 
 function formatCompactUsage(value: number): string {
@@ -962,37 +896,7 @@ function logMessageColor(log: string): string {
   return "label"
 }
 
-// ==================== 4. Apple iOS 26 Liquid Glass 材质与动效系统 ====================
-
-declare const UIGlass: {
-  clear: () => {
-    interactive: (val: boolean) => any
-  }
-  regular?: () => {
-    interactive: (val: boolean) => any
-  }
-} | undefined
-
-/**
- * 液态玻璃控件专用 GlassEffect 注入。
- * 功能按钮使用 clear，信息表面由 dashboardSurface 使用 regular；两者都保留系统暗色材质。
- */
-function liquidGlass(interactive: boolean = true) {
-  try {
-    if (typeof UIGlass !== "undefined" && typeof UIGlass.clear === "function") {
-      return {
-        glassEffect: {
-          glass: interactive ? UIGlass.clear().interactive(true) : UIGlass.clear().interactive(false),
-          shape: "capsule" as const
-        },
-        glassEffectTransition: "materialize" as const
-      }
-    }
-  } catch {
-    // fallback
-  }
-  return {}
-}
+// ==================== 4. 原生分组卡片样式 ====================
 
 // Native inset-grouped card: solid white (light) / elevated gray (dark), like Settings.
 const CARD_FILL = { light: "#FFFFFF", dark: "#1C1C1E" } as any
@@ -1086,7 +990,7 @@ function MonthlyTrafficOverview({
       </HStack>
       <ProgressView
         progressViewStyle="linear"
-        value={data ? Math.min(1, Math.max(0, data.totalGB / thresholdGB)) : 0}
+        value={data ? Math.min(1, Math.max(0, data.percentage / 100)) : 0}
         total={1}
         tint={data && data.totalGB >= thresholdGB ? "systemOrange" : "systemBlue"}
         frame={{ maxWidth: Infinity }}
@@ -1115,7 +1019,7 @@ function MonthlyTrafficOverview({
   )
 }
 
-// ==================== 5. 设置配置面板视图 (Apple Liquid Glass Controls) ====================
+// ==================== 5. 设置配置面板视图 ====================
 
 function maskAccessKeyId(value: string): string {
   const trimmed = value.trim()
@@ -1262,15 +1166,21 @@ function SettingsView({
 
       if (count > 0) {
         setErrorNotice(null)
-        setSuccessNotice(`🎉 成功智能识别并填入 ${count} 项配置！`)
+        setSuccessNotice(`已从剪贴板识别并填入 ${count} 项配置`)
+        // 凭据已读入，立即清空剪贴板，避免 Secret 留在系统剪贴板被其他 App 读取。
+        try {
+          if (typeof Pasteboard !== "undefined" && (Pasteboard as any)?.setString) {
+            await (Pasteboard as any).setString("")
+          }
+        } catch {}
         if (typeof Dialog !== "undefined" && Dialog.alert) {
           await Dialog.alert({
             title: "识别成功",
-            message: `已自动解析并填入 ${count} 项阿里云信息，确认无误后点击下方保存即可！`
+            message: `已填入 ${count} 项阿里云信息，剪贴板已清空。确认无误后点击保存。`
           })
         }
       } else {
-        setErrorNotice("未能从剪贴板识别出阿里云凭据格式，请点击各输入项右侧按钮录入。")
+        setErrorNotice("未能从剪贴板识别出阿里云凭据格式，请逐项点击下方条目手动填写。")
       }
     } catch (err: any) {
       setErrorNotice("读取剪贴板失败: " + (err?.message || String(err)))
@@ -1283,32 +1193,37 @@ function SettingsView({
     message: string,
     currentVal: string,
     placeholder: string,
-    onConfirm: (val: string) => void
+    onConfirm: (val: string) => void,
+    secret = false
   ) => {
     if (typeof Dialog !== "undefined" && Dialog.prompt) {
+      // Secrets are never echoed back; leaving the masked field empty keeps the saved value.
       const res = await Dialog.prompt({
         title,
         message,
-        defaultValue: currentVal,
+        defaultValue: secret ? "" : currentVal,
         placeholder,
+        obscureText: secret,
         confirmLabel: "确定",
         cancelLabel: "取消"
-      })
-      if (res !== null) {
-        onConfirm(res.trim())
+      } as any)
+      if (res !== null && res !== undefined) {
+        const value = res.trim()
+        if (secret && !value) return
+        onConfirm(value)
       }
     }
   }
 
   const REGION_PRESETS = [
-    { id: "cn-hongkong", label: "🇭🇰 中国香港 (cn-hongkong)" },
-    { id: "cn-hangzhou", label: "🇨🇳 华东1 杭州 (cn-hangzhou)" },
-    { id: "cn-shanghai", label: "🇨🇳 华东2 上海 (cn-shanghai)" },
-    { id: "cn-beijing", label: "🇨🇳 华北2 北京 (cn-beijing)" },
-    { id: "cn-shenzhen", label: "🇨🇳 华南1 深圳 (cn-shenzhen)" },
-    { id: "ap-southeast-1", label: "🇸🇬 新加坡 (ap-southeast-1)" },
-    { id: "ap-northeast-1", label: "🇯🇵 日本东京 (ap-northeast-1)" },
-    { id: "us-west-1", label: "🇺🇸 美国硅谷 (us-west-1)" }
+    { id: "cn-hongkong", label: "中国香港 (cn-hongkong)" },
+    { id: "cn-hangzhou", label: "华东1 杭州 (cn-hangzhou)" },
+    { id: "cn-shanghai", label: "华东2 上海 (cn-shanghai)" },
+    { id: "cn-beijing", label: "华北2 北京 (cn-beijing)" },
+    { id: "cn-shenzhen", label: "华南1 深圳 (cn-shenzhen)" },
+    { id: "ap-southeast-1", label: "新加坡 (ap-southeast-1)" },
+    { id: "ap-northeast-1", label: "日本东京 (ap-northeast-1)" },
+    { id: "us-west-1", label: "美国硅谷 (us-west-1)" }
   ]
 
   const handleSelectRegion = async () => {
@@ -1316,7 +1231,7 @@ function SettingsView({
       const actions = REGION_PRESETS.map(item => ({
         label: `${item.label}${region === item.id ? " ✓" : ""}`
       }))
-      actions.push({ label: "🌐 自定义输入其他地域..." })
+      actions.push({ label: "其他地域…" })
 
       const idx = await Dialog.actionSheet({
         title: "选择 ECS 所在地域",
@@ -1384,7 +1299,7 @@ function SettingsView({
       detail={sk ? "已设置" : "未设置"}
       detailColor={sk ? "secondaryLabel" : "systemBlue"}
       accessibilityLabel="设置 AccessKey Secret"
-      action={() => promptField("设置 AccessKey Secret", "请输入阿里云 AccessKey Secret", sk, "您的 Secret Key", setSk)}
+      action={() => promptField("设置 AccessKey Secret", sk ? "已保存 Secret。输入新值将替换，留空则保持不变。" : "请输入阿里云 AccessKey Secret", sk, sk ? "留空保持不变" : "AccessKey Secret", setSk, true)}
     />
   )
   const ecsRow = (
@@ -1578,7 +1493,7 @@ function SettingsView({
   )
 }
 
-// ==================== 6. 控制台仪表盘主视图 (Apple iOS 26 Liquid Glass System) ====================
+// ==================== 6. 控制台仪表盘主视图 ====================
 
 function getCachedConsoleSnapshot(config: AppConfig): { data: ConsoleData | null; lastUpdated: Date | null } {
   try {
@@ -1589,13 +1504,15 @@ function getCachedConsoleSnapshot(config: AppConfig): { data: ConsoleData | null
         if (!parsed) return { data: null, lastUpdated: null }
         const now = new Date()
         parsed.isCached = true
-        parsed.thresholdGB = config.trafficThresholdGB
-        parsed.vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
+        parsed.thresholdGB = config.trafficThresholdGB > 0 ? config.trafficThresholdGB : DEFAULT_CONFIG.trafficThresholdGB
+        parsed.vpsCutoffReferenceGB = config.vpsCutoffReferenceGB > 0 ? config.vpsCutoffReferenceGB : DEFAULT_CONFIG.vpsCutoffReferenceGB
         parsed.cutoffRemainingGB = Math.max(0, Number((parsed.vpsCutoffReferenceGB - parsed.totalGB).toFixed(2)))
         parsed.remainingGB = Math.max(0, Number((parsed.thresholdGB - parsed.totalGB).toFixed(2)))
-        parsed.percentage = Math.min(100, Number(((parsed.totalGB / parsed.thresholdGB) * 100).toFixed(1)))
-        parsed.daysRemaining = Math.max(1, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1)
-        parsed.dailyBudgetGB = (parsed.remainingGB / parsed.daysRemaining).toFixed(1)
+        parsed.percentage = usagePercentage(parsed.totalGB, parsed.thresholdGB)
+        const progress = chinaMonthProgress(now)
+        parsed.daysRemaining = progress.daysRemaining
+        parsed.monthTimeProgress = progress.monthTimeProgress
+        parsed.dailyBudgetGB = (parsed.remainingGB / parsed.daysRemaining).toFixed(2)
         if (parsed.financialBillStatus !== "available") {
           parsed.financialBillStatus = "unavailable"
         }
@@ -1706,9 +1623,8 @@ function ConsoleView() {
 
     const history = data?.financialBillHistory || []
     const currentDate = new Date()
-    const currentCycle = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, "0")}`
-    const previousDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1)
-    const previousCycle = `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, "0")}`
+    const currentCycle = chinaMonthKey(currentDate)
+    const previousCycle = chinaMonthKey(currentDate, -1)
     const lines = history.map(item => {
       const amount = !item.available
         ? "查询不可用"
@@ -1772,7 +1688,7 @@ function ConsoleView() {
       } else {
         tag = parseFloat(item.amount) > 0 ? " (查询到的费用)" : " (当前查询为0，非最终账单)"
       }
-      return `📅 ${item.date}: ${amt}${tag}`
+      return `${item.date}  ${amt}${tag}`
     })
 
     const msg = [
@@ -1789,7 +1705,7 @@ function ConsoleView() {
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
       await Dialog.alert({
-        title: "🖥️ ECS 产品费用明细",
+        title: "ECS 费用明细",
         message: msg
       })
     }
@@ -1824,7 +1740,7 @@ function ConsoleView() {
       } else {
         tag = parseFloat(item.amount) > 0 ? " (查询到的费用)" : " (当前查询为0，非最终账单)"
       }
-      return `📅 ${item.date}: ${amt}${tag}`
+      return `${item.date}  ${amt}${tag}`
     })
 
     const msg = [
@@ -1841,7 +1757,7 @@ function ConsoleView() {
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
       await Dialog.alert({
-        title: "🌐 公网网络产品费用明细",
+        title: "公网网络费用明细",
         message: msg
       })
     }
@@ -1875,7 +1791,7 @@ function ConsoleView() {
         appendLog(`CDT流量: ${res.totalGB} GB (${res.percentage}%)`)
         appendLog(`ECS 实例: ${res.ecsStatus} ${res.publicIp ? `(${res.publicIp})` : ""}`)
         if (res.financialBalance) {
-          appendLog(`账户余额: ¥${res.financialBalance.availableCashAmount}`, true)
+          appendLog(`账户余额: ${currencySymbol(res.financialBalance.currency)}${res.financialBalance.availableCashAmount}`, true)
         }
       } catch (err: any) {
         if (!refreshGate.isCurrent(generation)) return
@@ -1934,7 +1850,7 @@ function ConsoleView() {
     : isTransitional
       ? "systemOrange"
       : isStopped
-        ? "systemIndigo"
+        ? "secondaryLabel"
         : errorMessage && !data
           ? "systemRed"
           : "secondaryLabel"
@@ -1966,9 +1882,7 @@ function ConsoleView() {
   const logViewportHeight = Math.max(48, logCardHeight - 24)
 
   const now = new Date()
-  const currentDay = now.getDate()
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
-  const monthTimeProgress = data?.monthTimeProgress ?? Math.min(100, Math.max(1, Number(((currentDay / lastDay) * 100).toFixed(1))))
+  const monthTimeProgress = data?.monthTimeProgress ?? chinaMonthProgress(now).monthTimeProgress
   const cutoffReferenceGB =
     data?.vpsCutoffReferenceGB || config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
   const cutoffRemainingGB = data?.cutoffRemainingGB ?? Math.max(0, cutoffReferenceGB - (data?.totalGB || 0))
@@ -1976,7 +1890,7 @@ function ConsoleView() {
     ? getTrafficHealthMeta(data.totalGB, cutoffReferenceGB, data.percentage, monthTimeProgress)
     : null
 
-  // 2. 主控制台展示 (Apple iOS 26 Liquid Glass Architecture)
+  // 2. 主控制台展示
   return (
     <NavigationStack>
       <ZStack
@@ -2309,7 +2223,7 @@ function ConsoleView() {
           )}
 
           {/* Section 2: CDT 参考进度 */}
-          <DashboardSectionHeader title="用量详情" detail={data ? `参考值进度 ${data.percentage}%` : undefined} />
+          <DashboardSectionHeader title="用量详情" detail={data ? `已用 ${data.percentage.toFixed(1)}%` : undefined} />
 
           <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface()}>
             {data && healthMeta && (
@@ -2321,7 +2235,7 @@ function ConsoleView() {
                       {healthMeta.label}
                     </Text>
                     <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1} minScaleFactor={0.8}>
-                      已用 {formatCompactUsage(data.totalGB)} GB · VPS 参考线余 {formatCompactUsage(cutoffRemainingGB)} GB
+                      本月时间已过 {monthTimeProgress.toFixed(0)}% · 流量已用 {data.percentage.toFixed(1)}% · VPS 线余 {formatCompactUsage(cutoffRemainingGB)} GB
                     </Text>
                   </VStack>
                 </HStack>
@@ -2333,7 +2247,7 @@ function ConsoleView() {
               <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={0}>
                 <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
                   <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1}>
-                    {data.totalGB > data.thresholdGB ? "超出参考值" : data.totalGB === data.thresholdGB ? "达到参考值" : "参考值余量"}
+                    {data.totalGB > data.thresholdGB ? "超出参考值" : "参考余量"}
                   </Text>
                   <HStack alignment="lastTextBaseline" spacing={2}>
                     <Text font={22} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.7} foregroundStyle={data.totalGB > data.thresholdGB ? "systemRed" : "label"}>
@@ -2347,7 +2261,7 @@ function ConsoleView() {
 
                 <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
                   <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1}>
-                    距结算重置
+                    距结算
                   </Text>
                   <HStack alignment="lastTextBaseline" spacing={2}>
                     <Text font={22} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.7} foregroundStyle="label">
@@ -2361,11 +2275,11 @@ function ConsoleView() {
 
                 <VStack alignment="center" spacing={4} frame={{ maxWidth: Infinity }}>
                   <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1}>
-                    日均参考
+                    日均可用
                   </Text>
                   <HStack alignment="lastTextBaseline" spacing={2}>
                     <Text font={22} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.7} foregroundStyle="label">
-                      &lt; {formatCompactUsage(Number(data.dailyBudgetGB))}
+                      {formatCompactUsage(Number(data.dailyBudgetGB))}
                     </Text>
                     <Text font="caption1" foregroundStyle="secondaryLabel">GB</Text>
                   </HStack>

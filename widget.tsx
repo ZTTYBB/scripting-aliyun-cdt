@@ -18,11 +18,9 @@ import {
   Text,
   Image,
   Spacer,
-  Circle,
-  Divider,
-  ProgressView
+  Circle
 } from "scripting"
-import { MediumWidgetView } from "./medium_widget"
+import { MediumWidgetView, SmallWidgetView, LargeWidgetView } from "./medium_widget"
 import {
   DailyUsagePoint,
   createSnapshot,
@@ -31,27 +29,17 @@ import {
   readDailyUsage,
   sumCompleteSevenDays,
   assertSampleBillingMonth,
-  withRequestTimeout
+  withRequestTimeout,
+  aliyunHttpError,
+  chinaMonthProgress,
+  normalizeEcsStatus,
+  usagePercentage,
+  widgetErrorHint
 } from "./monitor_runtime"
 
 const WIDGET_TRACK = {
   light: "rgba(142, 142, 147, 0.18)",
   dark: "rgba(142, 142, 147, 0.36)"
-} as any
-
-const WIDGET_PANEL = {
-  light: "rgba(255, 255, 255, 0.72)",
-  dark: "rgba(118, 118, 128, 0.24)"
-} as any
-
-const WIDGET_SECONDARY = {
-  light: "rgba(60, 60, 67, 0.62)",
-  dark: "rgba(235, 235, 245, 0.68)"
-} as any
-
-const WIDGET_TERTIARY = {
-  light: "rgba(60, 60, 67, 0.42)",
-  dark: "rgba(235, 235, 245, 0.48)"
 } as any
 
 // ==================== 1. 本地存储配置读取 ====================
@@ -296,8 +284,7 @@ async function aliyunRequest<T = any>(
     })
 
     if (!response.ok) {
-      const err = await response.text()
-      throw new Error(`Aliyun [${action}] 错误 (${response.status}): ${err}`)
+      throw aliyunHttpError(action, response.status, await response.text())
     }
 
     return (await response.json()) as T
@@ -343,18 +330,6 @@ function parseCachedDate(value: unknown): Date | null {
   return Number.isFinite(date.getTime()) ? date : null
 }
 
-function normalizeEcsStatus(value: unknown): WidgetData["ecsStatus"] {
-  switch (value) {
-    case "Running":
-    case "Stopped":
-    case "Starting":
-    case "Stopping":
-      return value
-    default:
-      return "Unknown"
-  }
-}
-
 /**
  * The app dashboard snapshot has no embedded chart series. Validate its stable
  * source fields, then restore the shared local sampling history for fallback.
@@ -376,10 +351,10 @@ function adaptDashboardSnapshotForWidget(raw: unknown, config: AppConfig, now: D
     return null
   }
 
-  const daysRemaining = Math.max(1, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1)
+  const { daysRemaining } = chinaMonthProgress(now)
   const cutoffRemainingGB = Math.max(0, Number((vpsCutoffReferenceGB - totalGB).toFixed(2)))
   const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
-  const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
+  const percentage = usagePercentage(totalGB, thresholdGB)
   const color = totalGB >= vpsCutoffReferenceGB
     ? "systemRed"
     : totalGB >= vpsCutoffReferenceGB - 15
@@ -431,11 +406,11 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
   const details = cdtData.TrafficDetails || []
   const totalBytes = details.reduce((sum, item) => sum + (item.Traffic || 0), 0)
   const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
-  const thresholdGB = config.trafficThresholdGB
-  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || 195
+  const thresholdGB = config.trafficThresholdGB > 0 ? config.trafficThresholdGB : DEFAULT_CONFIG.trafficThresholdGB
+  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB > 0 ? config.vpsCutoffReferenceGB : DEFAULT_CONFIG.vpsCutoffReferenceGB
   const cutoffRemainingGB = Math.max(0, Number((vpsCutoffReferenceGB - totalGB).toFixed(2)))
   const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
-  const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
+  const percentage = usagePercentage(totalGB, thresholdGB)
   const instance = ecsData?.Instances?.Instance?.[0]
   const ecsStatus = normalizeEcsStatus(instance?.Status)
   const publicIp = getInstancePublicIp(instance)
@@ -443,9 +418,7 @@ async function fetchWidgetData(config: AppConfig): Promise<WidgetData> {
   // 3. 纯统计模式：小组件不执行任何关机请求，仅只读监控流量与状态
 
   // 4. 重置日推算
-  const currentDay = now.getDate()
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
-  const daysRemaining = Math.max(1, lastDay - currentDay + 1)
+  const { daysRemaining } = chinaMonthProgress(now)
   const dailyBudgetGB = (remainingGB / daysRemaining).toFixed(2)
   const dailyUsage = recordTrafficSample(config, totalGB, sampledAt)
   const sevenDayTotalGB = sumCompleteSevenDays(dailyUsage)
@@ -554,191 +527,17 @@ function TrafficRing({
           {value}
         </Text>
         {caption && (
-          <Text font={captionFont || 9} lineLimit={1} foregroundStyle="secondaryLabel">
+          <Text font={Math.max(9, captionFont || 9)} lineLimit={1} foregroundStyle="secondaryLabel">
             {caption}
           </Text>
         )}
         {subcaption && (
-          <Text font={Math.max(7, (captionFont || 9) - 1)} lineLimit={1} foregroundStyle="secondaryLabel">
+          <Text font={Math.max(9, (captionFont || 9) - 1)} lineLimit={1} foregroundStyle="secondaryLabel">
             {subcaption}
           </Text>
         )}
       </VStack>
     </ZStack>
-  )
-}
-
-function formatEstimate(value: number | null, precision: number = 2): string {
-  return value === null ? "--" : value.toFixed(precision)
-}
-
-function formatUpdateTime(date: Date): string {
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
-}
-
-function widgetUpdateLabel(data: WidgetData): string {
-  return `${data.isCached ? "缓存 · " : ""}${formatUpdateTime(data.updatedAt)} 更新`
-}
-
-function WidgetHeader({
-  data,
-  compact = false
-}: {
-  data: WidgetData
-  compact?: boolean
-}) {
-  const status = getECSStatusMeta(data.ecsStatus)
-  return (
-    <HStack alignment="center" frame={{ maxWidth: Infinity }}>
-      <HStack spacing={5} alignment="center">
-        <Image systemName="cloud.fill" font={compact ? 12 : 14} foregroundStyle="systemBlue" />
-        <Text font={compact ? "caption2" : "subheadline"} bold lineLimit={1} foregroundStyle="label">
-          阿里云 CDT
-        </Text>
-      </HStack>
-      <Spacer />
-      <HStack
-        spacing={4}
-        padding={{ horizontal: compact ? 5 : 7, vertical: compact ? 2 : 3 }}
-        background={WIDGET_PANEL}
-        clipShape={{ type: "capsule" }}
-        alignment="center"
-      >
-        <Circle widgetAccentable fill={status.color} frame={{ width: compact ? 5 : 6, height: compact ? 5 : 6 }} />
-        <Text font={compact ? 8 : 9} bold lineLimit={1} foregroundStyle={status.color}>
-          {data.isCached ? "缓存 · " : ""}{compact ? status.shortLabel : status.label}
-        </Text>
-      </HStack>
-    </HStack>
-  )
-}
-
-function WidgetProgressBar({ data }: { data: WidgetData }) {
-  return (
-    <VStack spacing={4} frame={{ maxWidth: Infinity }}>
-      <ProgressView
-        progressViewStyle="linear"
-        value={Math.max(0.01, Math.min(1, data.percentage / 100))}
-        total={1}
-        tint={data.color}
-        frame={{ maxWidth: Infinity, height: 5 }}
-      />
-      <HStack frame={{ maxWidth: Infinity }} alignment="center">
-        <Text font={8} foregroundStyle={WIDGET_SECONDARY}>本地参考值 {data.thresholdGB} GB</Text>
-        <Spacer />
-        <Text font={8} bold monospacedDigit foregroundStyle={data.color}>{data.percentage.toFixed(1)}%</Text>
-      </HStack>
-    </VStack>
-  )
-}
-
-function WidgetMetric({
-  label,
-  value,
-  accent = "label",
-  alignment = "leading"
-}: {
-  label: string
-  value: string
-  accent?: string | any
-  alignment?: "leading" | "center" | "trailing"
-}) {
-  return (
-    <VStack alignment={alignment} spacing={2} frame={{ maxWidth: Infinity }}>
-      <Text font={8} lineLimit={1} foregroundStyle={WIDGET_TERTIARY}>{label}</Text>
-      <Text font={13} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle={accent}>
-        {value}
-      </Text>
-    </VStack>
-  )
-}
-
-function DailyBars({
-  data,
-  chartHeight,
-  barWidth,
-  spacing,
-  showValues,
-  fullWeekday,
-  compact = false
-}: {
-  data: WidgetData
-  chartHeight: number
-  barWidth: number
-  spacing: number
-  showValues: boolean
-  fullWeekday: boolean
-  compact?: boolean
-}) {
-  const knownValues = data.dailyUsage
-    .map(item => item.valueGB)
-    .filter((value): value is number => value !== null)
-  const maximum = Math.max(0.01, ...knownValues)
-
-  return (
-    <HStack
-      spacing={spacing}
-      alignment="bottom"
-      padding={{ horizontal: compact ? 5 : 8, vertical: compact ? 2 : 7 }}
-      background={WIDGET_PANEL}
-      clipShape={{ type: "rect", cornerRadius: 12, style: "continuous" }}
-      frame={{ maxWidth: Infinity }}
-    >
-      {data.dailyUsage.map(point => {
-        const fillHeight = point.valueGB === null || point.valueGB <= 0
-          ? 0
-          : Math.max(7, Math.round((point.valueGB / maximum) * chartHeight))
-        const label = point.isToday ? "今天" : fullWeekday ? `周${point.label}` : point.label
-        const fillColor = point.isToday ? "systemBlue" : "systemGreen"
-
-        return (
-          <VStack key={point.date} spacing={compact ? 1 : 3} alignment="center" frame={{ maxWidth: Infinity }}>
-            {showValues && (
-              <Text
-                font={compact ? 6 : 8}
-                bold={point.isToday}
-                monospacedDigit
-                lineLimit={1}
-                minScaleFactor={0.72}
-                foregroundStyle={
-                  point.valueGB === null
-                    ? WIDGET_TERTIARY
-                    : point.isToday
-                      ? "systemBlue"
-                      : "secondaryLabel"
-                }
-                frame={{ height: compact ? 7 : 11 }}
-              >
-                {formatEstimate(point.valueGB, fullWeekday ? 2 : 1)}
-              </Text>
-            )}
-            <VStack
-              spacing={0}
-              frame={{ width: barWidth, height: chartHeight, alignment: "bottom" }}
-              background={point.isToday ? "rgba(0, 122, 255, 0.14)" : WIDGET_TRACK}
-              clipShape={{ type: "rect", cornerRadius: 5, style: "continuous" }}
-            >
-              <Spacer />
-              {point.valueGB !== null && point.valueGB > 0 && (
-                <VStack
-                  frame={{ width: barWidth, height: fillHeight }}
-                  background={fillColor}
-                  clipShape={{ type: "rect", cornerRadius: 5, style: "continuous" }}
-                />
-              )}
-            </VStack>
-            <Text
-              font={compact ? 6 : 8}
-              bold={point.isToday}
-              lineLimit={1}
-              foregroundStyle={point.isToday ? "systemBlue" : "secondaryLabel"}
-            >
-              {label}
-            </Text>
-          </VStack>
-        )
-      })}
-    </HStack>
   )
 }
 
@@ -769,132 +568,6 @@ function NotConfiguredWidgetView() {
   )
 }
 
-/** 小号小组件 (systemSmall) */
-function SmallWidgetView({ data }: { data: WidgetData }) {
-  return (
-    <VStack
-      alignment="leading"
-      spacing={8}
-      padding={{ horizontal: 13, vertical: 12 }}
-      widgetBackground="systemBackground"
-      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
-    >
-      <WidgetHeader data={data} compact />
-      <VStack
-        alignment="leading"
-        spacing={5}
-        padding={{ horizontal: 10, vertical: 9 }}
-        background={WIDGET_PANEL}
-        clipShape={{ type: "rect", cornerRadius: 14, style: "continuous" }}
-        frame={{ maxWidth: Infinity }}
-      >
-        <Text font={8} foregroundStyle={WIDGET_SECONDARY}>本月互联网出网</Text>
-        <HStack alignment="lastTextBaseline">
-          <Text font={27} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle="label">
-            {data.totalGB.toFixed(2)}
-          </Text>
-          <Text font={10} foregroundStyle={WIDGET_SECONDARY} padding={{ leading: 3 }}>GB</Text>
-          <Spacer />
-          <Text font={9} bold monospacedDigit foregroundStyle={data.color}>
-            {data.percentage.toFixed(1)}%
-          </Text>
-        </HStack>
-        <WidgetProgressBar data={data} />
-      </VStack>
-
-      <HStack spacing={7} alignment="top" frame={{ maxWidth: Infinity }}>
-        <WidgetMetric label="参考余量" value={`${data.remainingGB.toFixed(1)} GB`} accent={data.color} />
-        <Divider frame={{ height: 27 }} />
-        <WidgetMetric label="距结算" value={`${data.daysRemaining} 天`} alignment="center" />
-      </HStack>
-
-      <HStack alignment="center" frame={{ maxWidth: Infinity }}>
-        <Text font={8} lineLimit={1} foregroundStyle={WIDGET_TERTIARY}>
-          {widgetUpdateLabel(data)}
-        </Text>
-        <Spacer />
-        <Text font={8} lineLimit={1} foregroundStyle={WIDGET_TERTIARY}>
-          ECS {getECSStatusMeta(data.ecsStatus).shortLabel}
-        </Text>
-      </HStack>
-    </VStack>
-  )
-}
-
-/** 大号小组件 (systemLarge) */
-function LargeWidgetView({ data }: { data: WidgetData }) {
-  return (
-    <VStack
-      alignment="leading"
-      spacing={10}
-      padding={{ horizontal: 17, vertical: 15 }}
-      widgetBackground="systemBackground"
-      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
-    >
-      <WidgetHeader data={data} />
-
-      <HStack spacing={16} alignment="center" frame={{ maxWidth: Infinity }}>
-        <TrafficRing
-          data={data}
-          size={106}
-          lineWidth={9}
-          value={data.totalGB.toFixed(2)}
-          caption="GB 本月已用"
-          subcaption={`${data.percentage.toFixed(1)}%`}
-          valueFont={22}
-          captionFont={9}
-        />
-        <VStack
-          alignment="leading"
-          spacing={9}
-          padding={{ horizontal: 13, vertical: 11 }}
-          background={WIDGET_PANEL}
-          clipShape={{ type: "rect", cornerRadius: 14, style: "continuous" }}
-          frame={{ maxWidth: Infinity }}
-        >
-          <HStack spacing={12} frame={{ maxWidth: Infinity }}>
-            <WidgetMetric label="参考余量" value={`${data.remainingGB.toFixed(2)} GB`} accent={data.color} />
-            <WidgetMetric label="距结算" value={`${data.daysRemaining} 天`} alignment="trailing" />
-          </HStack>
-          <HStack spacing={12} frame={{ maxWidth: Infinity }}>
-            <WidgetMetric label="今日估算" value={`${formatEstimate(data.todayEstimatedGB)} GB`} />
-            <WidgetMetric label="近 7 日" value={`${formatEstimate(data.sevenDayTotalGB)} GB`} alignment="trailing" />
-          </HStack>
-          <WidgetProgressBar data={data} />
-        </VStack>
-      </HStack>
-
-      <Divider />
-
-      <HStack alignment="center" frame={{ maxWidth: Infinity }}>
-        <Text font={10} lineLimit={1} foregroundStyle="secondaryLabel">每日估算用量</Text>
-        <Spacer />
-        <Text font={9} bold lineLimit={1} foregroundStyle="secondaryLabel">单位 GB</Text>
-      </HStack>
-
-      <DailyBars
-        data={data}
-        chartHeight={82}
-        barWidth={26}
-        spacing={8}
-        showValues={true}
-        fullWeekday={true}
-      />
-
-      <HStack alignment="center" frame={{ maxWidth: Infinity }}>
-        <HStack spacing={5} alignment="center">
-          <Image systemName="clock" font={9} foregroundStyle="systemOrange" />
-          <Text font={9} bold lineLimit={1} foregroundStyle="systemOrange">日用量为本机采样估算</Text>
-        </HStack>
-        <Spacer />
-        <Text font={9} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
-          {widgetUpdateLabel(data)}
-        </Text>
-      </HStack>
-    </VStack>
-  )
-}
-
 /** 锁屏圆形小组件 (accessoryCircular) */
 function AccessoryCircularView({ data }: { data: WidgetData }) {
   return (
@@ -910,7 +583,7 @@ function AccessoryCircularView({ data }: { data: WidgetData }) {
         value={`${data.percentage.toFixed(0)}%`}
         caption={data.isCached ? "缓存" : "CDT"}
         valueFont={12}
-        captionFont={7}
+        captionFont={9}
       />
     </ZStack>
   )
@@ -942,7 +615,7 @@ function AccessoryRectangularView({ data }: { data: WidgetData }) {
           <Spacer />
           <HStack spacing={4} alignment="center">
             <Circle widgetAccentable fill={status.color} frame={{ width: 5, height: 5 }} />
-            <Text font={9} bold lineLimit={1} foregroundStyle={status.color}>
+            <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">
               {data.isCached ? "缓存 · " : ""}{status.shortLabel}
             </Text>
           </HStack>
@@ -1047,7 +720,7 @@ async function main() {
           </Text>
         </HStack>
         <Text font="caption2" foregroundStyle="secondaryLabel" lineLimit={3}>
-          {err?.message || "网络请求超时或凭据无效"}
+          {widgetErrorHint(err?.message)}
         </Text>
       </VStack>
     )

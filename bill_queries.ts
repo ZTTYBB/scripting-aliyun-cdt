@@ -129,10 +129,11 @@ export interface RecentBillingDate {
 export function recentBillingDates(now: Date, count: number = 7): RecentBillingDate[] {
   if (!Number.isFinite(now.getTime()) || !Number.isSafeInteger(count) || count < 1) return []
   return Array.from({ length: count }, (_, index) => {
-    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - index)
-    const year = String(date.getFullYear()).padStart(4, "0")
-    const month = String(date.getMonth() + 1).padStart(2, "0")
-    const day = String(date.getDate()).padStart(2, "0")
+    // Billing dates follow China Standard Time (UTC+8, no DST).
+    const date = new Date(now.getTime() + 8 * 60 * 60 * 1000 - index * 24 * 60 * 60 * 1000)
+    const year = String(date.getUTCFullYear()).padStart(4, "0")
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0")
+    const day = String(date.getUTCDate()).padStart(2, "0")
     return {
       dateStr: `${year}-${month}-${day}`,
       displayDate: `${month}-${day}`,

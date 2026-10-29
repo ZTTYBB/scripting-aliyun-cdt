@@ -27,9 +27,6 @@ import {
   Button,
   Spacer,
   Divider,
-  TextField,
-  Toolbar,
-  ToolbarItem,
   NavigationStack,
   List,
   Section,
@@ -80,12 +77,102 @@ const RUNTIME_SNAPSHOT_TTL_MS = 6 * 60 * 60 * 1000
 const RUNTIME_LEGACY_HISTORY_KEY = "aliyun_cdt_daily_history_v1"
 const RUNTIME_HISTORY_KEY = "aliyun_cdt_daily_history_v2_"
 
+const RUNTIME_CHINA_OFFSET_MS = 8 * 60 * 60 * 1000
+const RUNTIME_DAY_MS = 24 * 60 * 60 * 1000
+
+interface ChinaDateParts {
+  year: number
+  month: number
+  day: number
+  weekday: number
+}
+
+// Aliyun billing cycles follow China Standard Time (UTC+8, no DST), regardless of the device time zone.
+function chinaDateParts(date: Date): ChinaDateParts {
+  const shifted = new Date(date.getTime() + RUNTIME_CHINA_OFFSET_MS)
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    weekday: shifted.getUTCDay()
+  }
+}
+
+function chinaMonthKey(date: Date, monthOffset = 0): string {
+  const parts = chinaDateParts(date)
+  const target = new Date(Date.UTC(parts.year, parts.month - 1 + monthOffset, 1))
+  return `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, "0")}`
+}
+
+function chinaMonthProgress(date: Date): {
+  currentDay: number
+  lastDay: number
+  daysRemaining: number
+  monthTimeProgress: number
+} {
+  const parts = chinaDateParts(date)
+  const lastDay = new Date(Date.UTC(parts.year, parts.month, 0)).getUTCDate()
+  return {
+    currentDay: parts.day,
+    lastDay,
+    daysRemaining: Math.max(1, lastDay - parts.day + 1),
+    monthTimeProgress: Math.min(100, Math.max(1, Number(((parts.day / lastDay) * 100).toFixed(1))))
+  }
+}
+
+function usagePercentage(totalGB: number, thresholdGB: number): number {
+  if (!Number.isFinite(totalGB) || !Number.isFinite(thresholdGB) || thresholdGB <= 0) return 0
+  return Math.max(0, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
+}
+
+type NormalizedEcsStatus = "Running" | "Stopped" | "Starting" | "Stopping" | "Unknown"
+
+function normalizeEcsStatus(value: unknown): NormalizedEcsStatus {
+  switch (String(value ?? "").trim().toLowerCase()) {
+    case "running":
+      return "Running"
+    case "stopped":
+      return "Stopped"
+    case "starting":
+      return "Starting"
+    case "stopping":
+      return "Stopping"
+    default:
+      return "Unknown"
+  }
+}
+
+// Error bodies can echo the signed string (including the AccessKey ID); keep only the error code.
+function aliyunHttpError(action: string, status: number, body: string): Error {
+  let code = ""
+  try {
+    const parsed = JSON.parse(body)
+    if (parsed && typeof parsed.Code === "string") code = parsed.Code
+  } catch {
+    const match = /<Code>([^<]{1,80})<\/Code>/.exec(body || "")
+    if (match) code = match[1]
+  }
+  code = code.replace(/[^\w.\-]/g, "").slice(0, 80)
+  return new Error(`Aliyun [${action}] 错误 (${status})${code ? `: ${code}` : ""}`)
+}
+
+function widgetErrorHint(message: unknown): string {
+  const text = String(message ?? "")
+  if (/InvalidAccessKeyId|SignatureDoesNotMatch|IncompleteSignature|InvalidAccessKeySecret/.test(text)) return "AccessKey 无效，请在 App 内检查凭据"
+  if (/Forbidden|NoPermission|Unauthorized|\(403\)/.test(text)) return "RAM 权限不足，请在 App 内查看详情"
+  if (/InvalidInstanceId|InvalidRegionId/.test(text)) return "实例或地域不匹配，请在 App 内检查"
+  if (/timed out|Timeout|超时/i.test(text)) return "请求超时，稍后会自动重试"
+  if (/Billing month changed/.test(text)) return "账期刚切换，稍后会自动刷新"
+  return "网络异常或服务暂不可用"
+}
+
 function runtimeDateKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+  const parts = chinaDateParts(date)
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`
 }
 
 function runtimeOffsetDate(date: Date, offset: number): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset)
+  return new Date(date.getTime() + offset * RUNTIME_DAY_MS)
 }
 
 function runtimeRecord(value: unknown): value is Record<string, any> {
@@ -237,7 +324,7 @@ function createRefreshGate() {
 function assertSampleBillingMonth(sampledAt: Date, now: Date = new Date()): void {
   if (
     !Number.isFinite(sampledAt.getTime()) || !Number.isFinite(now.getTime()) ||
-    sampledAt.getFullYear() !== now.getFullYear() || sampledAt.getMonth() !== now.getMonth()
+    chinaMonthKey(sampledAt) !== chinaMonthKey(now)
   ) {
     throw new Error("Billing month changed; refresh required")
   }
@@ -326,7 +413,7 @@ function runtimeBuildDailyUsage(snapshots: RuntimeTrafficSample[], now: Date): D
     ) {
       valueGB = Math.max(0, Number((current.totalGB - previous.totalGB).toFixed(2)))
     }
-    return { date: key, label: index === 6 ? "\u4eca" : weekdayLabels[date.getDay()], valueGB, isToday: index === 6 }
+    return { date: key, label: index === 6 ? "\u4eca" : weekdayLabels[chinaDateParts(date).weekday], valueGB, isToday: index === 6 }
   })
 }
 
@@ -503,10 +590,11 @@ interface RecentBillingDate {
 function recentBillingDates(now: Date, count: number = 7): RecentBillingDate[] {
   if (!Number.isFinite(now.getTime()) || !Number.isSafeInteger(count) || count < 1) return []
   return Array.from({ length: count }, (_, index) => {
-    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - index)
-    const year = String(date.getFullYear()).padStart(4, "0")
-    const month = String(date.getMonth() + 1).padStart(2, "0")
-    const day = String(date.getDate()).padStart(2, "0")
+    // Billing dates follow China Standard Time (UTC+8, no DST).
+    const date = new Date(now.getTime() + 8 * 60 * 60 * 1000 - index * 24 * 60 * 60 * 1000)
+    const year = String(date.getUTCFullYear()).padStart(4, "0")
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0")
+    const day = String(date.getUTCDate()).padStart(2, "0")
     return {
       dateStr: `${year}-${month}-${day}`,
       displayDate: `${month}-${day}`,
@@ -732,8 +820,7 @@ async function aliyunRequest<T = any>(
       ...(signal ? { signal } : {})
     })
     if (!response.ok) {
-      const err = await response.text()
-      throw new Error(`Aliyun [${action}] 错误 (${response.status}): ${err}`)
+      throw aliyunHttpError(action, response.status, await response.text())
     }
     return (await response.json()) as T
   }, action)
@@ -884,23 +971,20 @@ async function fetchMonitorData(config: AppConfig, includeFinancial: boolean = t
   const details = cdtData.TrafficDetails || []
   const totalBytes = details.reduce((sum, item) => sum + (item.Traffic || 0), 0)
   const totalGB = Number((totalBytes / 1024 ** 3).toFixed(2))
-  const thresholdGB = config.trafficThresholdGB
-  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
+  const thresholdGB = config.trafficThresholdGB > 0 ? config.trafficThresholdGB : DEFAULT_CONFIG.trafficThresholdGB
+  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB > 0 ? config.vpsCutoffReferenceGB : DEFAULT_CONFIG.vpsCutoffReferenceGB
   const remainingGB = Math.max(0, Number((thresholdGB - totalGB).toFixed(2)))
-  const percentage = Math.min(100, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
+  const percentage = usagePercentage(totalGB, thresholdGB)
 
   // 查询 ECS 状态；失败时仍保留已成功获取的 CDT 用量。
   const instance = ecsData?.Instances?.Instance?.[0]
-  const ecsStatus = (instance?.Status as MonitorData["ecsStatus"]) || "Unknown"
+  const ecsStatus: MonitorData["ecsStatus"] = normalizeEcsStatus(instance?.Status)
   const publicIp = getInstancePublicIp(instance)
 
   // 纯统计模式：手机端仅只读拉取用量与账单，关机熔断由 VPS 独立守护
 
-  const currentDay = now.getDate()
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
-  const daysRemaining = Math.max(1, lastDay - currentDay + 1)
+  const { daysRemaining, monthTimeProgress } = chinaMonthProgress(now)
   const dailyBudgetGB = (remainingGB / daysRemaining).toFixed(2)
-  const monthTimeProgress = Math.min(100, Math.max(1, Number(((currentDay / lastDay) * 100).toFixed(1))))
   // Sampling is committed only after the caller accepts its request generation.
   const dailyUsage = readDailyUsage(config, now)
   const sevenDayTotalGB = sumCompleteSevenDays(dailyUsage)
@@ -941,7 +1025,7 @@ async function fetchMonitorData(config: AppConfig, includeFinancial: boolean = t
   } catch {}
 
   try {
-    const cycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+    const cycle = chinaMonthKey(now)
 
     const monthResult = await queryBillItemsForCycle(config, cycle)
     const billItems = monthResult.items
@@ -1148,9 +1232,15 @@ function getTrafficHealthMeta(totalGB: number, cutoffReferenceGB: number, percen
     }
   }
   if (percentage > monthTimeProgress + 15) {
-    return { label: "本地参考值用量进度超前", color: "systemOrange", icon: "exclamationmark.circle.fill" }
+    return { label: "用量进度快于本月时间进度", color: "systemOrange", icon: "exclamationmark.circle.fill" }
   }
-  return { label: "本地参考值进度正常", color: "systemGreen", icon: "checkmark.circle.fill" }
+  return { label: "用量进度正常", color: "systemGreen", icon: "checkmark.circle.fill" }
+}
+
+function currencySymbol(currency?: string): string {
+  if (currency === "USD") return "$"
+  if (currency === "CNY" || !currency) return "¥"
+  return `${currency} `
 }
 
 function humanizeAliyunError(rawMessage: string): string {
@@ -1165,7 +1255,13 @@ function humanizeAliyunError(rawMessage: string): string {
     return "找不到指定的 ECS 实例，请核对实例 ID 与所在地域 (Region)。"
   }
   if (rawMessage.includes("Forbidden.RAM") || rawMessage.includes("NoPermission") || rawMessage.includes("Unauthorized")) {
-    return "RAM 权限不足：请授予 ECS/CDT 只读查询权限及 BSS 权限 bss:DescribeAcccount、bss:DescribeBillList、bss:QueryAccountBill。"
+    return "RAM 权限不足：请授予所需只读权限 ecs:DescribeInstances、cdt:ListCdtInternetTraffic；账单功能另需对应 BSS 查询权限。"
+  }
+  if (rawMessage.includes("IncorrectInstanceStatus")) {
+    return "实例当前状态无法执行此操作，请稍候重试。"
+  }
+  if (rawMessage.includes("OperationDenied.NoStock")) {
+    return "当前地域实例资源库存紧张，无法启动。"
   }
   return rawMessage
 }
@@ -1218,7 +1314,7 @@ function TrafficRing({
     <ZStack frame={{ width: size, height: size }} alignment="center">
       <Circle
         stroke={{
-          shapeStyle: "rgba(142, 142, 147, 0.16)",
+          shapeStyle: { light: "rgba(120, 120, 128, 0.20)", dark: "rgba(120, 120, 128, 0.36)" } as any,
           strokeStyle: { lineWidth, lineCap: "round" }
         }}
         frame={{ width: size, height: size }}
@@ -1248,110 +1344,17 @@ function TrafficRing({
           {value}
         </Text>
         {caption && (
-          <Text font={captionFont || 9} lineLimit={1} foregroundStyle="secondaryLabel">
+          <Text font={Math.max(9, captionFont || 9)} lineLimit={1} foregroundStyle="secondaryLabel">
             {caption}
           </Text>
         )}
         {subcaption && (
-          <Text font={Math.max(7, (captionFont || 9) - 1)} lineLimit={1} foregroundStyle="secondaryLabel">
+          <Text font={Math.max(9, (captionFont || 9) - 1)} lineLimit={1} foregroundStyle="secondaryLabel">
             {subcaption}
           </Text>
         )}
       </VStack>
     </ZStack>
-  )
-}
-
-function formatEstimate(value: number | null, precision: number = 2): string {
-  return value === null ? "--" : value.toFixed(precision)
-}
-
-function toValidDate(value: unknown): Date | null {
-  const date = value instanceof Date
-    ? value
-    : typeof value === "string" || typeof value === "number"
-      ? new Date(value)
-      : null
-
-  return date && !Number.isNaN(date.getTime()) ? date : null
-}
-
-function formatUpdateTime(value: Date | string | number | null | undefined): string {
-  const date = toValidDate(value)
-  if (!date) return "--:--"
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
-}
-
-function DailyBars({
-  data,
-  chartHeight,
-  barWidth,
-  spacing,
-  showValues,
-  fullWeekday
-}: {
-  data: MonitorData
-  chartHeight: number
-  barWidth: number
-  spacing: number
-  showValues: boolean
-  fullWeekday: boolean
-}) {
-  const knownValues = data.dailyUsage
-    .map(item => item.valueGB)
-    .filter((value): value is number => value !== null)
-  const maximum = Math.max(0.01, ...knownValues)
-
-  return (
-    <HStack spacing={spacing} alignment="bottom" frame={{ maxWidth: Infinity }}>
-      {data.dailyUsage.map(point => {
-        const fillHeight = point.valueGB === null || point.valueGB <= 0
-          ? 0
-          : Math.max(7, Math.round((point.valueGB / maximum) * chartHeight))
-        const label = point.isToday ? "今天" : fullWeekday ? `周${point.label}` : point.label
-        const fillColor = point.isToday ? "systemBlue" : "systemGreen"
-
-        return (
-          <VStack key={point.date} spacing={3} alignment="center" frame={{ maxWidth: Infinity }}>
-            {showValues && (
-              <Text
-                font={8}
-                bold={point.isToday}
-                monospacedDigit
-                lineLimit={1}
-                minScaleFactor={0.72}
-                foregroundStyle={point.isToday ? "systemBlue" : "secondaryLabel"}
-              >
-                {formatEstimate(point.valueGB, fullWeekday ? 2 : 1)}
-              </Text>
-            )}
-            <VStack
-              spacing={0}
-              frame={{ width: barWidth, height: chartHeight, alignment: "bottom" }}
-              background="rgba(142, 142, 147, 0.14)"
-              clipShape={{ type: "capsule" }}
-            >
-              <Spacer />
-              {point.valueGB !== null && point.valueGB > 0 && (
-                <VStack
-                  frame={{ width: barWidth, height: fillHeight }}
-                  background={fillColor}
-                  clipShape={{ type: "capsule" }}
-                />
-              )}
-            </VStack>
-            <Text
-              font={8}
-              bold={point.isToday}
-              lineLimit={1}
-              foregroundStyle={point.isToday ? "systemBlue" : "secondaryLabel"}
-            >
-              {label}
-            </Text>
-          </VStack>
-        )
-      })}
-    </HStack>
   )
 }
 
@@ -1382,69 +1385,7 @@ function NotConfiguredWidget() {
 }
 
 function SmallWidget({ data }: { data: MonitorData }) {
-  const status = getECSStatusMeta(data.ecsStatus)
-
-  return (
-    <VStack
-      alignment="leading"
-      spacing={4}
-      padding={{ horizontal: 10, vertical: 9 }}
-      widgetBackground="systemBackground"
-      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
-    >
-      <HStack alignment="center">
-        <HStack spacing={4} alignment="center">
-          <Image systemName="cloud.fill" font={12} foregroundStyle="systemBlue" />
-          <Text font="caption2" bold lineLimit={1} foregroundStyle="label">
-            CDT
-          </Text>
-        </HStack>
-        <Spacer />
-        <HStack spacing={4} alignment="center">
-          <Circle widgetAccentable fill={status.color} frame={{ width: 6, height: 6 }} />
-          <Text font="caption2" bold lineLimit={1} foregroundStyle={status.color}>
-            {data.isCached ? "缓存" : status.shortLabel}
-          </Text>
-        </HStack>
-      </HStack>
-
-      <HStack frame={{ maxWidth: Infinity }} alignment="center">
-        <Spacer />
-        <TrafficRing
-          data={data}
-          size={76}
-          lineWidth={7}
-          value={data.totalGB.toFixed(2)}
-          caption={`参考 ${data.thresholdGB} GB`}
-          subcaption={`${data.percentage.toFixed(1)}%`}
-          valueFont={17}
-          captionFont={8}
-        />
-        <Spacer />
-      </HStack>
-
-      <HStack spacing={4} alignment="top" frame={{ maxWidth: Infinity }}>
-        <VStack alignment="leading" spacing={1} frame={{ maxWidth: Infinity }}>
-          <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel">今日估算</Text>
-          <Text font={9} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} allowsTightening={true} foregroundStyle="label">
-            {formatEstimate(data.todayEstimatedGB)} GB
-          </Text>
-        </VStack>
-        <VStack alignment="center" spacing={1} frame={{ maxWidth: Infinity }}>
-          <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel">日均可用</Text>
-          <Text font={9} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} allowsTightening={true} foregroundStyle="label">
-            {data.dailyBudgetGB} GB
-          </Text>
-        </VStack>
-        <VStack alignment="trailing" spacing={1} frame={{ maxWidth: Infinity }}>
-          <Text font={8} lineLimit={1} foregroundStyle="secondaryLabel">近 7 日</Text>
-          <Text font={9} bold monospacedDigit lineLimit={1} minScaleFactor={0.65} allowsTightening={true} foregroundStyle="label">
-            {formatEstimate(data.sevenDayTotalGB)} GB
-          </Text>
-        </VStack>
-      </HStack>
-    </VStack>
-  )
+  return <SmallWidgetView data={data} />
 }
 
 // BEGIN SHARED MEDIUM WIDGET: generated from medium_widget.tsx
@@ -1465,11 +1406,11 @@ interface MediumWidgetData {
 
 // iOS system fill tones: one neutral surface for every panel, colour only for state.
 const MEDIUM_COLORS = {
-  usagePanel: { light: "rgba(120, 120, 128, 0.09)", dark: "rgba(120, 120, 128, 0.20)" } as any,
   neutralPanel: { light: "rgba(120, 120, 128, 0.09)", dark: "rgba(120, 120, 128, 0.20)" } as any,
   todayPanel: { light: "rgba(0, 122, 255, 0.10)", dark: "rgba(10, 132, 255, 0.22)" } as any,
   track: { light: "rgba(120, 120, 128, 0.20)", dark: "rgba(120, 120, 128, 0.36)" } as any,
   blue: { light: "#007AFF", dark: "#0A84FF" } as any,
+  softBlue: { light: "rgba(0, 122, 255, 0.42)", dark: "rgba(10, 132, 255, 0.52)" } as any,
   green: { light: "#34C759", dark: "#30D158" } as any
 }
 
@@ -1691,118 +1632,221 @@ function MediumWidgetView({ data }: { data: MediumWidgetData }) {
   )
 }
 
+// ==================== Small / Large share the medium widget's visual language ====================
+
+interface SystemWidgetData extends MediumWidgetData {
+  todayEstimatedGB?: number | null
+}
+
+function widgetUsageColor(data: MediumWidgetData): any {
+  return data.color === "systemGreen" ? MEDIUM_COLORS.blue : data.color
+}
+
+function WidgetTitleRow({ data, compact = false }: { data: MediumWidgetData; compact?: boolean }) {
+  const status = mediumStatus(data.ecsStatus)
+  return (
+    <HStack spacing={5} alignment="center" frame={{ maxWidth: Infinity }}>
+      <Image systemName="cloud.fill" font={compact ? 11 : 13} widgetAccentable foregroundStyle={MEDIUM_COLORS.blue} />
+      <Text font={compact ? 11 : 13} fontWeight="semibold" lineLimit={1} foregroundStyle="label">
+        {compact ? "CDT" : "阿里云 CDT"}
+      </Text>
+      <Spacer />
+      <HStack spacing={4} alignment="center">
+        <Circle widgetAccentable fill={status.color} frame={{ width: 6, height: 6 }} />
+        <Text font={compact ? 9 : 11} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+          {`${status.label} · ${data.isCached ? "缓存 " : ""}${mediumUpdateTime(data.updatedAt)}`}
+        </Text>
+      </HStack>
+    </HStack>
+  )
+}
+
+function UsageBar({ data, width, height = 5 }: { data: MediumWidgetData; width: number; height?: number }) {
+  const progress = Math.max(0, Math.min(1, data.percentage / 100))
+  const radius = height / 2
+  return (
+    <ZStack alignment="leading" frame={{ width, height }}>
+      <RoundedRectangle cornerRadius={radius} fill={MEDIUM_COLORS.track} frame={{ width, height }} />
+      {progress > 0 && (
+        <RoundedRectangle widgetAccentable cornerRadius={radius} fill={widgetUsageColor(data)} frame={{ width: Math.max(height, width * progress), height }} />
+      )}
+    </ZStack>
+  )
+}
+
+function SmallWidgetContent({ data, width, height }: { data: SystemWidgetData; width: number; height: number }) {
+  return (
+    <VStack alignment="leading" spacing={0} frame={{ width, height, alignment: "topLeading" }}>
+      <WidgetTitleRow data={data} compact />
+      <Spacer />
+      <Text font={9} foregroundStyle="secondaryLabel" lineLimit={1}>本月出网</Text>
+      <HStack alignment="lastTextBaseline" spacing={2}>
+        <Text font={26} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.6} foregroundStyle="label">
+          {data.totalGB.toFixed(2)}
+        </Text>
+        <Text font={11} fontWeight="semibold" foregroundStyle="secondaryLabel">GB</Text>
+      </HStack>
+      <Spacer />
+      <UsageBar data={data} width={width} />
+      <HStack spacing={2} alignment="center" frame={{ width }} padding={{ top: 3 }}>
+        <Text font={9} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel" frame={{ maxWidth: Infinity, alignment: "leading" }}>
+          共 {data.thresholdGB} GB
+        </Text>
+        <Text font={9} fontWeight="semibold" monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+          {data.percentage.toFixed(1)}%
+        </Text>
+      </HStack>
+      <Spacer />
+      <HStack spacing={6} alignment="top" frame={{ width }}>
+        <MediumMetric label="参考余量" value={data.remainingGB.toFixed(1)} unit="GB" width={(width - 6) / 2} height={28} />
+        <MediumMetric label="距结算" value={String(data.daysRemaining)} unit="天" width={(width - 6) / 2} height={28} />
+      </HStack>
+    </VStack>
+  )
+}
+
+function SmallWidgetView({ data }: { data: SystemWidgetData }) {
+  return (
+    <GeometryReader widgetBackground="systemBackground">
+      {proxy => {
+        const fallback = Widget.displaySize?.width > 0 ? Widget.displaySize.width - 28 : 130
+        const width = Number.isFinite(proxy?.size?.width) && proxy.size.width > 80 ? Math.floor(proxy.size.width) : fallback
+        const height = Number.isFinite(proxy?.size?.height) && proxy.size.height > 80 ? Math.floor(proxy.size.height) : width
+        return (
+          <ZStack alignment="topLeading" frame={{ width, height }}>
+            <SmallWidgetContent data={data} width={width} height={height} />
+          </ZStack>
+        )
+      }}
+    </GeometryReader>
+  )
+}
+
+function DailyUsageBars({ data, width, chartHeight }: { data: SystemWidgetData; width: number; chartHeight: number }) {
+  const points = data.dailyUsage.slice(-7)
+  const known = points.map(point => point.valueGB).filter((value): value is number => value !== null && Number.isFinite(value))
+  const maximum = Math.max(0.01, ...known)
+  const columnWidth = width / 7
+  const barWidth = Math.min(22, Math.max(10, columnWidth - 14))
+  return (
+    <ZStack frame={{ width, height: chartHeight + 36 }}>
+      <RoundedRectangle cornerRadius={8} style="continuous" fill={MEDIUM_COLORS.neutralPanel} frame={{ width, height: chartHeight + 36 }} />
+      <HStack spacing={0} alignment="bottom" frame={{ width, height: chartHeight + 36 }}>
+        {points.map(point => {
+          const value = point.valueGB
+          const fillHeight = value === null || value <= 0 ? 0 : Math.max(4, Math.round((value / maximum) * chartHeight))
+          const tint = point.isToday ? MEDIUM_COLORS.blue : MEDIUM_COLORS.softBlue
+          return (
+            <VStack key={point.date} spacing={3} alignment="center" frame={{ width: columnWidth }} padding={{ vertical: 5 }}>
+              <Text
+                font={10}
+                fontWeight={point.isToday ? "semibold" : "regular"}
+                monospacedDigit
+                lineLimit={1}
+                minScaleFactor={0.8}
+                foregroundStyle={point.isToday ? MEDIUM_COLORS.blue : value === null ? "tertiaryLabel" : "secondaryLabel"}
+              >
+                {formatDailyUsage(value)}
+              </Text>
+              <ZStack alignment="bottom" frame={{ width: barWidth, height: chartHeight }}>
+                <RoundedRectangle cornerRadius={4} style="continuous" fill={MEDIUM_COLORS.track} frame={{ width: barWidth, height: chartHeight }} />
+                {fillHeight > 0 && (
+                  <RoundedRectangle widgetAccentable={point.isToday} cornerRadius={4} style="continuous" fill={tint} frame={{ width: barWidth, height: fillHeight }} />
+                )}
+              </ZStack>
+              <Text font={10} lineLimit={1} foregroundStyle={point.isToday ? MEDIUM_COLORS.blue : "secondaryLabel"}>
+                {point.isToday ? "今天" : point.label}
+              </Text>
+            </VStack>
+          )
+        })}
+      </HStack>
+    </ZStack>
+  )
+}
+
+function LargeWidgetContent({ data, width, height }: { data: SystemWidgetData; width: number; height: number }) {
+  const gap = 10
+  const tileWidth = (width - gap) / 2
+  const chartHeight = Math.max(48, Math.min(96, height - 236))
+  return (
+    <VStack alignment="leading" spacing={0} frame={{ width, height, alignment: "topLeading" }}>
+      <WidgetTitleRow data={data} />
+      <Spacer />
+      <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>本月出网</Text>
+      <HStack alignment="lastTextBaseline" spacing={3} frame={{ width }}>
+        <Text font={34} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.6} foregroundStyle="label">
+          {data.totalGB.toFixed(2)}
+        </Text>
+        <Text font={14} fontWeight="semibold" foregroundStyle="secondaryLabel">GB</Text>
+        <Spacer />
+        <Text font={12} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+          {data.percentage.toFixed(1)}% · 共 {data.thresholdGB} GB
+        </Text>
+      </HStack>
+      <Spacer />
+      <UsageBar data={data} width={width} height={6} />
+      <Spacer />
+      <VStack spacing={8} alignment="leading">
+        <HStack spacing={gap} alignment="top">
+          <LargeMetric label="参考余量" value={data.remainingGB.toFixed(2)} unit="GB" width={tileWidth} />
+          <LargeMetric label="日均可用" value={data.dailyBudgetGB} unit="GB" width={tileWidth} />
+        </HStack>
+        <HStack spacing={gap} alignment="top">
+          <LargeMetric label="距结算" value={String(data.daysRemaining)} unit="天" width={tileWidth} />
+          <LargeMetric label="近 7 日" value={formatDailyUsage(data.sevenDayTotalGB)} unit="GB" width={tileWidth} />
+        </HStack>
+      </VStack>
+      <Spacer />
+      <HStack alignment="center" frame={{ width }} padding={{ bottom: 5 }}>
+        <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>每日用量</Text>
+        <Spacer />
+        <Text font={10} foregroundStyle="tertiaryLabel" lineLimit={1}>本机采样估算 · GB</Text>
+      </HStack>
+      <DailyUsageBars data={data} width={width} chartHeight={chartHeight} />
+    </VStack>
+  )
+}
+
+function LargeMetric({ label, value, unit, width }: { label: string; value: string; unit: string; width: number }) {
+  return (
+    <VStack alignment="leading" spacing={1} frame={{ width, alignment: "topLeading" }}>
+      <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>{label}</Text>
+      <HStack alignment="lastTextBaseline" spacing={2}>
+        <Text font={17} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.75} foregroundStyle="label">
+          {value}
+        </Text>
+        <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>{unit}</Text>
+      </HStack>
+    </VStack>
+  )
+}
+
+function LargeWidgetView({ data }: { data: SystemWidgetData }) {
+  return (
+    <GeometryReader widgetBackground="systemBackground">
+      {proxy => {
+        const fallbackWidth = Widget.displaySize?.width > 0 ? Widget.displaySize.width - 32 : 297
+        const fallbackHeight = Widget.displaySize?.height > 0 ? Widget.displaySize.height - 32 : 313
+        const width = Number.isFinite(proxy?.size?.width) && proxy.size.width > 150 ? Math.floor(proxy.size.width) : fallbackWidth
+        const height = Number.isFinite(proxy?.size?.height) && proxy.size.height > 200 ? Math.floor(proxy.size.height) : fallbackHeight
+        return (
+          <ZStack alignment="topLeading" frame={{ width, height }}>
+            <LargeWidgetContent data={data} width={width} height={height} />
+          </ZStack>
+        )
+      }}
+    </GeometryReader>
+  )
+}
+
 function MediumWidget({ data }: { data: MonitorData }) {
   return <MediumWidgetView data={data} />
 }
 // END SHARED MEDIUM WIDGET
 
 function LargeWidget({ data }: { data: MonitorData }) {
-  const status = getECSStatusMeta(data.ecsStatus)
-
-  return (
-    <VStack
-      alignment="leading"
-      spacing={9}
-      padding={{ horizontal: 18, vertical: 15 }}
-      widgetBackground="systemBackground"
-      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
-    >
-      <HStack alignment="center">
-        <HStack spacing={6} alignment="center">
-          <Image systemName="cloud.fill" font={14} foregroundStyle="systemBlue" />
-          <Text font="subheadline" bold lineLimit={1} foregroundStyle="label">阿里云 CDT</Text>
-        </HStack>
-        <Spacer />
-        <HStack spacing={5} alignment="center">
-          <Circle widgetAccentable fill={status.color} frame={{ width: 7, height: 7 }} />
-          <Text font={10} bold lineLimit={1} foregroundStyle={status.color}>ECS {status.label}</Text>
-        </HStack>
-      </HStack>
-
-      <HStack spacing={18} alignment="center" frame={{ maxWidth: Infinity }}>
-        <TrafficRing
-          data={data}
-          size={106}
-          lineWidth={9}
-          value={data.totalGB.toFixed(2)}
-          caption="GB 本月已用"
-          subcaption={`${data.percentage.toFixed(1)}%`}
-          valueFont={22}
-          captionFont={9}
-        />
-
-        <VStack alignment="leading" spacing={9} frame={{ maxWidth: Infinity }}>
-          <HStack alignment="top" frame={{ maxWidth: Infinity }}>
-            <VStack alignment="leading" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">参考余量</Text>
-              <Text font={17} bold monospacedDigit lineLimit={1} foregroundStyle="label">
-                {data.remainingGB.toFixed(2)} GB
-              </Text>
-            </VStack>
-            <Spacer />
-            <VStack alignment="trailing" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">距结算</Text>
-              <Text font={17} bold monospacedDigit lineLimit={1} foregroundStyle="label">
-                {data.daysRemaining} 天
-              </Text>
-            </VStack>
-          </HStack>
-
-          <HStack alignment="top" frame={{ maxWidth: Infinity }}>
-            <VStack alignment="leading" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">今日估算</Text>
-              <Text font={14} bold monospacedDigit lineLimit={1} foregroundStyle="label">
-                {formatEstimate(data.todayEstimatedGB)} GB
-              </Text>
-            </VStack>
-            <Spacer />
-            <VStack alignment="trailing" spacing={2}>
-              <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">近 7 日</Text>
-              <Text font={14} bold monospacedDigit lineLimit={1} foregroundStyle="label">
-                {formatEstimate(data.sevenDayTotalGB)} GB
-              </Text>
-            </VStack>
-          </HStack>
-
-          <HStack alignment="bottom" frame={{ maxWidth: Infinity }}>
-            <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">剩余日均可用</Text>
-            <Spacer />
-            <Text font={15} bold monospacedDigit lineLimit={1} foregroundStyle="label">
-              {data.dailyBudgetGB} GB/天
-            </Text>
-          </HStack>
-        </VStack>
-      </HStack>
-
-      <Divider />
-      <HStack alignment="center" frame={{ maxWidth: Infinity }}>
-        <Text font={10} lineLimit={1} foregroundStyle="secondaryLabel">每日估算用量</Text>
-        <Spacer />
-        <Text font={9} bold lineLimit={1} foregroundStyle="secondaryLabel">单位 GB</Text>
-      </HStack>
-
-      <DailyBars
-        data={data}
-        chartHeight={82}
-        barWidth={26}
-        spacing={8}
-        showValues={true}
-        fullWeekday={true}
-      />
-
-      <Spacer />
-      <HStack alignment="center" frame={{ maxWidth: Infinity }}>
-        <HStack spacing={5} alignment="center">
-          <Image systemName="clock" font={9} foregroundStyle="systemOrange" />
-          <Text font={9} bold lineLimit={1} foregroundStyle="systemOrange">日用量为本机采样估算</Text>
-        </HStack>
-        <Spacer />
-        <Text font={9} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
-          {data.isCached ? "缓存 · " : ""}{formatUpdateTime(data.updatedAt)}
-        </Text>
-      </HStack>
-    </VStack>
-  )
+  return <LargeWidgetView data={data} />
 }
 
 function AccessoryRectangularWidget({ data }: { data: MonitorData }) {
@@ -1830,13 +1874,13 @@ function AccessoryRectangularWidget({ data }: { data: MonitorData }) {
           <Spacer />
           <HStack spacing={4} alignment="center">
             <Circle widgetAccentable fill={status.color} frame={{ width: 5, height: 5 }} />
-            <Text font={9} bold lineLimit={1} foregroundStyle={status.color}>
-              {data.isCached ? "缓存" : status.shortLabel}
+            <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">
+              {data.isCached ? "缓存 · " : ""}{status.shortLabel}
             </Text>
           </HStack>
         </HStack>
         <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">
-          剩余 {data.remainingGB.toFixed(1)} GB · {data.daysRemaining} 天重置
+          参考余量 {data.remainingGB.toFixed(1)} GB · 距结算 {data.daysRemaining} 天
         </Text>
       </VStack>
     </HStack>
@@ -1867,7 +1911,7 @@ function AccessoryCircularWidget({ data }: { data: MonitorData }) {
         value={`${Math.round(data.percentage)}%`}
         caption={data.isCached ? "缓存" : "CDT"}
         valueFont={11}
-        captionFont={7}
+        captionFont={9}
       />
     </ZStack>
   )
@@ -1898,36 +1942,7 @@ function presentMonitorWidget(data: MonitorData): void {
   }
 }
 
-// ==================== 5. Apple iOS 26 Liquid Glass 材质与动效系统 ====================
-
-declare const UIGlass: {
-  clear: () => {
-    interactive: (val: boolean) => any
-  }
-} | undefined
-
-/**
- * 液态玻璃控件专用 GlassEffect 注入
- * 严格遵循 HIG 分层法则：仅功能操作控件（按钮、胶囊、开关）应用液态玻璃材质，内容卡片保持纯白不透明
- */
-function liquidGlass(interactive: boolean = true) {
-  try {
-    if (typeof UIGlass !== "undefined" && typeof UIGlass.clear === "function") {
-      return {
-        glassEffect: {
-          glass: interactive ? UIGlass.clear().interactive(true) : UIGlass.clear().interactive(false),
-          shape: "capsule" as const
-        },
-        glassEffectTransition: "materialize" as const
-      }
-    }
-  } catch {
-    // fallback
-  }
-  return {}
-}
-
-// ==================== 6. 设置配置面板视图 (Apple Liquid Glass Controls) ====================
+// ==================== 5. 设置配置面板视图 ====================
 
 function maskAccessKeyId(value: string): string {
   const trimmed = value.trim()
@@ -2138,15 +2153,21 @@ function SettingsComponent({
 
       if (count > 0) {
         setErrorNotice(null)
-        setSuccessNotice(`🎉 成功智能识别并填入 ${count} 项配置！`)
+        setSuccessNotice(`已从剪贴板识别并填入 ${count} 项配置`)
+        // 凭据已读入，立即清空剪贴板，避免 Secret 留在系统剪贴板被其他 App 读取。
+        try {
+          if (typeof Pasteboard !== "undefined" && (Pasteboard as any)?.setString) {
+            await (Pasteboard as any).setString("")
+          }
+        } catch {}
         if (typeof Dialog !== "undefined" && Dialog.alert) {
           await Dialog.alert({
             title: "识别成功",
-            message: `已自动解析并填入 ${count} 项阿里云信息，确认无误后点击下方保存即可！`
+            message: `已填入 ${count} 项阿里云信息，剪贴板已清空。确认无误后点击保存。`
           })
         }
       } else {
-        setErrorNotice("未能从剪贴板识别出阿里云凭据格式，请点击各输入项右侧按钮录入。")
+        setErrorNotice("未能从剪贴板识别出阿里云凭据格式，请逐项点击下方条目手动填写。")
       }
     } catch (err: any) {
       setErrorNotice("读取剪贴板失败: " + (err?.message || String(err)))
@@ -2159,32 +2180,37 @@ function SettingsComponent({
     message: string,
     currentVal: string,
     placeholder: string,
-    onConfirm: (val: string) => void
+    onConfirm: (val: string) => void,
+    secret = false
   ) => {
     if (typeof Dialog !== "undefined" && Dialog.prompt) {
+      // Secrets are never echoed back; leaving the masked field empty keeps the saved value.
       const res = await Dialog.prompt({
         title,
         message,
-        defaultValue: currentVal,
+        defaultValue: secret ? "" : currentVal,
         placeholder,
+        obscureText: secret,
         confirmLabel: "确定",
         cancelLabel: "取消"
-      })
-      if (res !== null) {
-        onConfirm(res.trim())
+      } as any)
+      if (res !== null && res !== undefined) {
+        const value = res.trim()
+        if (secret && !value) return
+        onConfirm(value)
       }
     }
   }
 
   const REGION_PRESETS = [
-    { id: "cn-hongkong", label: "🇭🇰 中国香港 (cn-hongkong)" },
-    { id: "cn-hangzhou", label: "🇨🇳 华东1 杭州 (cn-hangzhou)" },
-    { id: "cn-shanghai", label: "🇨🇳 华东2 上海 (cn-shanghai)" },
-    { id: "cn-beijing", label: "🇨🇳 华北2 北京 (cn-beijing)" },
-    { id: "cn-shenzhen", label: "🇨🇳 华南1 深圳 (cn-shenzhen)" },
-    { id: "ap-southeast-1", label: "🇸🇬 新加坡 (ap-southeast-1)" },
-    { id: "ap-northeast-1", label: "🇯🇵 日本东京 (ap-northeast-1)" },
-    { id: "us-west-1", label: "🇺🇸 美国硅谷 (us-west-1)" }
+    { id: "cn-hongkong", label: "中国香港 (cn-hongkong)" },
+    { id: "cn-hangzhou", label: "华东1 杭州 (cn-hangzhou)" },
+    { id: "cn-shanghai", label: "华东2 上海 (cn-shanghai)" },
+    { id: "cn-beijing", label: "华北2 北京 (cn-beijing)" },
+    { id: "cn-shenzhen", label: "华南1 深圳 (cn-shenzhen)" },
+    { id: "ap-southeast-1", label: "新加坡 (ap-southeast-1)" },
+    { id: "ap-northeast-1", label: "日本东京 (ap-northeast-1)" },
+    { id: "us-west-1", label: "美国硅谷 (us-west-1)" }
   ]
 
   const handleSelectRegion = async () => {
@@ -2192,7 +2218,7 @@ function SettingsComponent({
       const actions = REGION_PRESETS.map(item => ({
         label: `${item.label}${region === item.id ? " ✓" : ""}`
       }))
-      actions.push({ label: "🌐 自定义输入其他地域..." })
+      actions.push({ label: "其他地域…" })
 
       const idx = await Dialog.actionSheet({
         title: "选择 ECS 所在地域",
@@ -2260,7 +2286,7 @@ function SettingsComponent({
       detail={sk ? "已设置" : "未设置"}
       detailColor={sk ? "secondaryLabel" : "systemBlue"}
       accessibilityLabel="设置 AccessKey Secret"
-      action={() => promptField("设置 AccessKey Secret", "请输入阿里云 AccessKey Secret", sk, "您的 Secret Key", setSk)}
+      action={() => promptField("设置 AccessKey Secret", sk ? "已保存 Secret。输入新值将替换，留空则保持不变。" : "请输入阿里云 AccessKey Secret", sk, sk ? "留空保持不变" : "AccessKey Secret", setSk, true)}
     />
   )
   const ecsRow = (
@@ -2454,16 +2480,16 @@ function SettingsComponent({
   )
 }
 
-// ==================== 7. 控制台仪表盘主视图 (Apple iOS 26 Liquid Glass System) ====================
+// ==================== 7. 控制台仪表盘主视图 ====================
 
 function restoreCachedMonitorData(raw: unknown, config: AppConfig): MonitorData | null {
   const cached = readSnapshot<MonitorData>(raw, config)
   if (!cached) return null
   const now = new Date()
-  const thresholdGB = config.trafficThresholdGB
-  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB
+  const thresholdGB = config.trafficThresholdGB > 0 ? config.trafficThresholdGB : DEFAULT_CONFIG.trafficThresholdGB
+  const vpsCutoffReferenceGB = config.vpsCutoffReferenceGB > 0 ? config.vpsCutoffReferenceGB : DEFAULT_CONFIG.vpsCutoffReferenceGB
   const remainingGB = Math.max(0, Number((thresholdGB - cached.totalGB).toFixed(2)))
-  const daysRemaining = Math.max(1, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1)
+  const { daysRemaining, monthTimeProgress } = chinaMonthProgress(now)
   const dailyUsage = readDailyUsage(config, now)
   return {
     ...cached,
@@ -2471,8 +2497,9 @@ function restoreCachedMonitorData(raw: unknown, config: AppConfig): MonitorData 
     thresholdGB,
     vpsCutoffReferenceGB,
     remainingGB,
-    percentage: Math.min(100, Number(((cached.totalGB / thresholdGB) * 100).toFixed(1))),
+    percentage: usagePercentage(cached.totalGB, thresholdGB),
     daysRemaining,
+    monthTimeProgress,
     dailyBudgetGB: (remainingGB / daysRemaining).toFixed(2),
     dailyUsage,
     sevenDayTotalGB: sumCompleteSevenDays(dailyUsage),
@@ -2552,10 +2579,10 @@ function AppDashboard() {
       ? "不可用"
       : isPrivacy
         ? "****"
-        : `¥${data.financialBill?.ecsAmount || "0.00"}`
+        : `${currencySymbol(data.financialBill?.currency)}${data.financialBill?.ecsAmount || "0.00"}`
     const lines = list.map(item => {
       const unavailable = item.available !== true
-      const amt = unavailable ? "不可用" : isPrivacy ? "****" : `¥${item.amount}`
+      const amt = unavailable ? "不可用" : isPrivacy ? "****" : `${currencySymbol(data?.financialBill?.currency)}${item.amount}`
       let tag = ""
       if (unavailable) {
         tag = " (查询不可用)"
@@ -2566,7 +2593,7 @@ function AppDashboard() {
       } else {
         tag = " (未返回费用记录)"
       }
-      return `📅 ${item.date}: ${amt}${tag}`
+      return `${item.date}  ${amt}${tag}`
     })
 
     const msg = [
@@ -2585,7 +2612,7 @@ function AppDashboard() {
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
       await Dialog.alert({
-        title: "🖥️ ECS 产品费用明细",
+        title: "ECS 费用明细",
         message: msg
       })
     }
@@ -2603,10 +2630,10 @@ function AppDashboard() {
       ? "不可用"
       : isPrivacy
         ? "****"
-        : `¥${data.financialBill?.eipAmount || "0.00"}`
+        : `${currencySymbol(data.financialBill?.currency)}${data.financialBill?.eipAmount || "0.00"}`
     const lines = list.map(item => {
       const unavailable = item.available !== true
-      const amt = unavailable ? "不可用" : isPrivacy ? "****" : `¥${item.amount}`
+      const amt = unavailable ? "不可用" : isPrivacy ? "****" : `${currencySymbol(data?.financialBill?.currency)}${item.amount}`
       let tag = ""
       if (unavailable) {
         tag = " (查询不可用)"
@@ -2617,7 +2644,7 @@ function AppDashboard() {
       } else {
         tag = " (未返回费用记录)"
       }
-      return `📅 ${item.date}: ${amt}${tag}`
+      return `${item.date}  ${amt}${tag}`
     })
 
     const msg = [
@@ -2636,7 +2663,7 @@ function AppDashboard() {
 
     if (typeof Dialog !== "undefined" && Dialog.alert) {
       await Dialog.alert({
-        title: "🌐 公网网络产品费用明细",
+        title: "公网网络费用明细",
         message: msg
       })
     }
@@ -2757,9 +2784,7 @@ function AppDashboard() {
   const publicIpColor = data?.publicIp ? "systemBlue" : errorMsg && !data ? "systemRed" : "secondaryLabel"
 
   const now = new Date()
-  const currentDay = now.getDate()
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
-  const monthTimeProgress = data?.monthTimeProgress ?? Math.min(100, Math.max(1, Number(((currentDay / lastDay) * 100).toFixed(1))))
+  const monthTimeProgress = data?.monthTimeProgress ?? chinaMonthProgress(now).monthTimeProgress
   const healthMeta = data
     ? getTrafficHealthMeta(data.totalGB, data.vpsCutoffReferenceGB, data.percentage, monthTimeProgress)
     : null
@@ -2877,7 +2902,7 @@ function AppDashboard() {
                       <HStack alignment="lastTextBaseline" spacing={3}>
                         {data.financialBalance && (
                           <Text font="headline" foregroundStyle={data.financialBalance.status === "arrears" ? "systemRed" : "label"}>
-                            {data.financialBalance.currency === "USD" ? "$" : "¥"}
+                            {currencySymbol(data.financialBalance.currency)}
                           </Text>
                         )}
                         <Text font={26} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle={!data.financialBalance ? "secondaryLabel" : data.financialBalance.status === "arrears" ? "systemRed" : "label"}>
@@ -2904,7 +2929,7 @@ function AppDashboard() {
                       <Text font="footnote" foregroundStyle="secondaryLabel">{financialBillPresentation.label}</Text>
                       <HStack alignment="lastTextBaseline" spacing={3}>
                         {data.financialBillStatus === "available" && (
-                          <Text font="headline" foregroundStyle="label">{data.financialBill?.currency === "USD" ? "$" : "¥"}</Text>
+                          <Text font="headline" foregroundStyle="label">{currencySymbol(data.financialBill?.currency)}</Text>
                         )}
                         <Text font={26} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.65} foregroundStyle={data.financialBillStatus !== "available" ? "secondaryLabel" : "label"}>
                           {data.financialBillStatus !== "available"
@@ -2927,7 +2952,7 @@ function AppDashboard() {
                       <IconTile systemName="server.rack" color="systemBlue" />
                       <Text font="body" foregroundStyle="label" frame={{ maxWidth: Infinity, alignment: "leading" }}>ECS 产品</Text>
                       <Text font="body" monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
-                        {data.financialBillStatus !== "available" ? "不可用" : isPrivacy ? "****" : `¥${data.financialBill?.ecsAmount || "0.00"}`}
+                        {data.financialBillStatus !== "available" ? "不可用" : isPrivacy ? "****" : `${currencySymbol(data.financialBill?.currency)}${data.financialBill?.ecsAmount || "0.00"}`}
                       </Text>
                       <Image systemName="chevron.right" font={13} fontWeight="semibold" foregroundStyle="tertiaryLabel" />
                     </HStack>
@@ -2940,7 +2965,7 @@ function AppDashboard() {
                       <IconTile systemName="globe.asia.australia" color="systemIndigo" />
                       <Text font="body" foregroundStyle="label" frame={{ maxWidth: Infinity, alignment: "leading" }}>公网网络</Text>
                       <Text font="body" monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
-                        {data.financialBillStatus !== "available" ? "不可用" : isPrivacy ? "****" : `¥${data.financialBill?.eipAmount || "0.00"}`}
+                        {data.financialBillStatus !== "available" ? "不可用" : isPrivacy ? "****" : `${currencySymbol(data.financialBill?.currency)}${data.financialBill?.eipAmount || "0.00"}`}
                       </Text>
                       <Image systemName="chevron.right" font={13} fontWeight="semibold" foregroundStyle="tertiaryLabel" />
                     </HStack>
@@ -2951,7 +2976,7 @@ function AppDashboard() {
             )}
 
             {/* Section 3: 用量详情 */}
-            <DashboardSectionHeader title="用量详情" detail={data ? `已用 ${data.percentage}%` : undefined} />
+            <DashboardSectionHeader title="用量详情" detail={data ? `已用 ${data.percentage.toFixed(1)}%` : undefined} />
             <VStack spacing={0} frame={{ maxWidth: Infinity, alignment: "leading" }} {...dashboardSurface()}>
               {data && healthMeta && (
                 <>
@@ -2960,7 +2985,7 @@ function AppDashboard() {
                     <VStack alignment="leading" spacing={2} frame={{ maxWidth: Infinity, alignment: "leading" }}>
                       <Text font="body" foregroundStyle="label" lineLimit={2}>{healthMeta.label}</Text>
                       <Text font="footnote" foregroundStyle="secondaryLabel" lineLimit={1} minScaleFactor={0.8}>
-                        本月时间已过 {monthTimeProgress.toFixed(0)}% · 流量消耗 {data.percentage.toFixed(1)}%
+                        本月时间已过 {monthTimeProgress.toFixed(0)}% · 流量已用 {data.percentage.toFixed(1)}% · VPS 线余 {Math.max(0, data.vpsCutoffReferenceGB - data.totalGB).toFixed(1)} GB
                       </Text>
                     </VStack>
                   </HStack>
@@ -2970,15 +2995,15 @@ function AppDashboard() {
               {data ? (
                 <HStack padding={{ horizontal: 16, vertical: 14 }} alignment="center" spacing={0}>
                   <UsageMetric
-                    label={data.totalGB > data.thresholdGB ? "超出参考值" : data.totalGB === data.thresholdGB ? "已到参考值" : "低于参考值"}
+                    label={data.totalGB > data.thresholdGB ? "超出参考值" : "参考余量"}
                     value={data.totalGB > data.thresholdGB ? `+${(data.totalGB - data.thresholdGB).toFixed(1)}` : data.remainingGB.toFixed(1)}
                     unit="GB"
                     color={data.totalGB > data.thresholdGB ? "systemRed" : "label"}
                   />
                   <Divider frame={{ height: 36 }} />
-                  <UsageMetric label="距结算重置" value={String(data.daysRemaining)} unit="天" />
+                  <UsageMetric label="距结算" value={String(data.daysRemaining)} unit="天" />
                   <Divider frame={{ height: 36 }} />
-                  <UsageMetric label="建议日均" value={`< ${data.dailyBudgetGB}`} unit="GB" />
+                  <UsageMetric label="日均可用" value={data.dailyBudgetGB} unit="GB" />
                 </HStack>
               ) : (
                 <HStack padding={16} alignment="center">
@@ -3052,7 +3077,7 @@ async function main() {
             </Text>
           </HStack>
           <Text font="caption2" foregroundStyle="secondaryLabel" lineLimit={3}>
-            {err?.message || "网络请求超时或凭据无效"}
+            {widgetErrorHint(err?.message)}
           </Text>
         </VStack>
       )

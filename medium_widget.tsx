@@ -7,7 +7,8 @@ import {
   Image,
   Circle,
   RoundedRectangle,
-  GeometryReader
+  GeometryReader,
+  Spacer
 } from "scripting"
 
 interface MediumWidgetData {
@@ -27,11 +28,11 @@ interface MediumWidgetData {
 
 // iOS system fill tones: one neutral surface for every panel, colour only for state.
 const MEDIUM_COLORS = {
-  usagePanel: { light: "rgba(120, 120, 128, 0.09)", dark: "rgba(120, 120, 128, 0.20)" } as any,
   neutralPanel: { light: "rgba(120, 120, 128, 0.09)", dark: "rgba(120, 120, 128, 0.20)" } as any,
   todayPanel: { light: "rgba(0, 122, 255, 0.10)", dark: "rgba(10, 132, 255, 0.22)" } as any,
   track: { light: "rgba(120, 120, 128, 0.20)", dark: "rgba(120, 120, 128, 0.36)" } as any,
   blue: { light: "#007AFF", dark: "#0A84FF" } as any,
+  softBlue: { light: "rgba(0, 122, 255, 0.42)", dark: "rgba(10, 132, 255, 0.52)" } as any,
   green: { light: "#34C759", dark: "#30D158" } as any
 }
 
@@ -246,6 +247,214 @@ export function MediumWidgetView({ data }: { data: MediumWidgetData }) {
         return (
           <ZStack alignment="center" frame={{ width: layout.availableWidth, height: layout.availableHeight }}>
             <MediumWidgetContent data={data} layout={layout} />
+          </ZStack>
+        )
+      }}
+    </GeometryReader>
+  )
+}
+
+// ==================== Small / Large share the medium widget's visual language ====================
+
+interface SystemWidgetData extends MediumWidgetData {
+  todayEstimatedGB?: number | null
+}
+
+function widgetUsageColor(data: MediumWidgetData): any {
+  return data.color === "systemGreen" ? MEDIUM_COLORS.blue : data.color
+}
+
+function WidgetTitleRow({ data, compact = false }: { data: MediumWidgetData; compact?: boolean }) {
+  const status = mediumStatus(data.ecsStatus)
+  return (
+    <HStack spacing={5} alignment="center" frame={{ maxWidth: Infinity }}>
+      <Image systemName="cloud.fill" font={compact ? 11 : 13} widgetAccentable foregroundStyle={MEDIUM_COLORS.blue} />
+      <Text font={compact ? 11 : 13} fontWeight="semibold" lineLimit={1} foregroundStyle="label">
+        {compact ? "CDT" : "阿里云 CDT"}
+      </Text>
+      <Spacer />
+      <HStack spacing={4} alignment="center">
+        <Circle widgetAccentable fill={status.color} frame={{ width: 6, height: 6 }} />
+        <Text font={compact ? 9 : 11} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+          {`${status.label} · ${data.isCached ? "缓存 " : ""}${mediumUpdateTime(data.updatedAt)}`}
+        </Text>
+      </HStack>
+    </HStack>
+  )
+}
+
+function UsageBar({ data, width, height = 5 }: { data: MediumWidgetData; width: number; height?: number }) {
+  const progress = Math.max(0, Math.min(1, data.percentage / 100))
+  const radius = height / 2
+  return (
+    <ZStack alignment="leading" frame={{ width, height }}>
+      <RoundedRectangle cornerRadius={radius} fill={MEDIUM_COLORS.track} frame={{ width, height }} />
+      {progress > 0 && (
+        <RoundedRectangle widgetAccentable cornerRadius={radius} fill={widgetUsageColor(data)} frame={{ width: Math.max(height, width * progress), height }} />
+      )}
+    </ZStack>
+  )
+}
+
+function SmallWidgetContent({ data, width, height }: { data: SystemWidgetData; width: number; height: number }) {
+  return (
+    <VStack alignment="leading" spacing={0} frame={{ width, height, alignment: "topLeading" }}>
+      <WidgetTitleRow data={data} compact />
+      <Spacer />
+      <Text font={9} foregroundStyle="secondaryLabel" lineLimit={1}>本月出网</Text>
+      <HStack alignment="lastTextBaseline" spacing={2}>
+        <Text font={26} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.6} foregroundStyle="label">
+          {data.totalGB.toFixed(2)}
+        </Text>
+        <Text font={11} fontWeight="semibold" foregroundStyle="secondaryLabel">GB</Text>
+      </HStack>
+      <Spacer />
+      <UsageBar data={data} width={width} />
+      <HStack spacing={2} alignment="center" frame={{ width }} padding={{ top: 3 }}>
+        <Text font={9} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel" frame={{ maxWidth: Infinity, alignment: "leading" }}>
+          共 {data.thresholdGB} GB
+        </Text>
+        <Text font={9} fontWeight="semibold" monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+          {data.percentage.toFixed(1)}%
+        </Text>
+      </HStack>
+      <Spacer />
+      <HStack spacing={6} alignment="top" frame={{ width }}>
+        <MediumMetric label="参考余量" value={data.remainingGB.toFixed(1)} unit="GB" width={(width - 6) / 2} height={28} />
+        <MediumMetric label="距结算" value={String(data.daysRemaining)} unit="天" width={(width - 6) / 2} height={28} />
+      </HStack>
+    </VStack>
+  )
+}
+
+export function SmallWidgetView({ data }: { data: SystemWidgetData }) {
+  return (
+    <GeometryReader widgetBackground="systemBackground">
+      {proxy => {
+        const fallback = Widget.displaySize?.width > 0 ? Widget.displaySize.width - 28 : 130
+        const width = Number.isFinite(proxy?.size?.width) && proxy.size.width > 80 ? Math.floor(proxy.size.width) : fallback
+        const height = Number.isFinite(proxy?.size?.height) && proxy.size.height > 80 ? Math.floor(proxy.size.height) : width
+        return (
+          <ZStack alignment="topLeading" frame={{ width, height }}>
+            <SmallWidgetContent data={data} width={width} height={height} />
+          </ZStack>
+        )
+      }}
+    </GeometryReader>
+  )
+}
+
+function DailyUsageBars({ data, width, chartHeight }: { data: SystemWidgetData; width: number; chartHeight: number }) {
+  const points = data.dailyUsage.slice(-7)
+  const known = points.map(point => point.valueGB).filter((value): value is number => value !== null && Number.isFinite(value))
+  const maximum = Math.max(0.01, ...known)
+  const columnWidth = width / 7
+  const barWidth = Math.min(22, Math.max(10, columnWidth - 14))
+  return (
+    <ZStack frame={{ width, height: chartHeight + 36 }}>
+      <RoundedRectangle cornerRadius={8} style="continuous" fill={MEDIUM_COLORS.neutralPanel} frame={{ width, height: chartHeight + 36 }} />
+      <HStack spacing={0} alignment="bottom" frame={{ width, height: chartHeight + 36 }}>
+        {points.map(point => {
+          const value = point.valueGB
+          const fillHeight = value === null || value <= 0 ? 0 : Math.max(4, Math.round((value / maximum) * chartHeight))
+          const tint = point.isToday ? MEDIUM_COLORS.blue : MEDIUM_COLORS.softBlue
+          return (
+            <VStack key={point.date} spacing={3} alignment="center" frame={{ width: columnWidth }} padding={{ vertical: 5 }}>
+              <Text
+                font={10}
+                fontWeight={point.isToday ? "semibold" : "regular"}
+                monospacedDigit
+                lineLimit={1}
+                minScaleFactor={0.8}
+                foregroundStyle={point.isToday ? MEDIUM_COLORS.blue : value === null ? "tertiaryLabel" : "secondaryLabel"}
+              >
+                {formatDailyUsage(value)}
+              </Text>
+              <ZStack alignment="bottom" frame={{ width: barWidth, height: chartHeight }}>
+                <RoundedRectangle cornerRadius={4} style="continuous" fill={MEDIUM_COLORS.track} frame={{ width: barWidth, height: chartHeight }} />
+                {fillHeight > 0 && (
+                  <RoundedRectangle widgetAccentable={point.isToday} cornerRadius={4} style="continuous" fill={tint} frame={{ width: barWidth, height: fillHeight }} />
+                )}
+              </ZStack>
+              <Text font={10} lineLimit={1} foregroundStyle={point.isToday ? MEDIUM_COLORS.blue : "secondaryLabel"}>
+                {point.isToday ? "今天" : point.label}
+              </Text>
+            </VStack>
+          )
+        })}
+      </HStack>
+    </ZStack>
+  )
+}
+
+function LargeWidgetContent({ data, width, height }: { data: SystemWidgetData; width: number; height: number }) {
+  const gap = 10
+  const tileWidth = (width - gap) / 2
+  const chartHeight = Math.max(48, Math.min(96, height - 236))
+  return (
+    <VStack alignment="leading" spacing={0} frame={{ width, height, alignment: "topLeading" }}>
+      <WidgetTitleRow data={data} />
+      <Spacer />
+      <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>本月出网</Text>
+      <HStack alignment="lastTextBaseline" spacing={3} frame={{ width }}>
+        <Text font={34} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.6} foregroundStyle="label">
+          {data.totalGB.toFixed(2)}
+        </Text>
+        <Text font={14} fontWeight="semibold" foregroundStyle="secondaryLabel">GB</Text>
+        <Spacer />
+        <Text font={12} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+          {data.percentage.toFixed(1)}% · 共 {data.thresholdGB} GB
+        </Text>
+      </HStack>
+      <Spacer />
+      <UsageBar data={data} width={width} height={6} />
+      <Spacer />
+      <VStack spacing={8} alignment="leading">
+        <HStack spacing={gap} alignment="top">
+          <LargeMetric label="参考余量" value={data.remainingGB.toFixed(2)} unit="GB" width={tileWidth} />
+          <LargeMetric label="日均可用" value={data.dailyBudgetGB} unit="GB" width={tileWidth} />
+        </HStack>
+        <HStack spacing={gap} alignment="top">
+          <LargeMetric label="距结算" value={String(data.daysRemaining)} unit="天" width={tileWidth} />
+          <LargeMetric label="近 7 日" value={formatDailyUsage(data.sevenDayTotalGB)} unit="GB" width={tileWidth} />
+        </HStack>
+      </VStack>
+      <Spacer />
+      <HStack alignment="center" frame={{ width }} padding={{ bottom: 5 }}>
+        <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>每日用量</Text>
+        <Spacer />
+        <Text font={10} foregroundStyle="tertiaryLabel" lineLimit={1}>本机采样估算 · GB</Text>
+      </HStack>
+      <DailyUsageBars data={data} width={width} chartHeight={chartHeight} />
+    </VStack>
+  )
+}
+
+function LargeMetric({ label, value, unit, width }: { label: string; value: string; unit: string; width: number }) {
+  return (
+    <VStack alignment="leading" spacing={1} frame={{ width, alignment: "topLeading" }}>
+      <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>{label}</Text>
+      <HStack alignment="lastTextBaseline" spacing={2}>
+        <Text font={17} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.75} foregroundStyle="label">
+          {value}
+        </Text>
+        <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>{unit}</Text>
+      </HStack>
+    </VStack>
+  )
+}
+
+export function LargeWidgetView({ data }: { data: SystemWidgetData }) {
+  return (
+    <GeometryReader widgetBackground="systemBackground">
+      {proxy => {
+        const fallbackWidth = Widget.displaySize?.width > 0 ? Widget.displaySize.width - 32 : 297
+        const fallbackHeight = Widget.displaySize?.height > 0 ? Widget.displaySize.height - 32 : 313
+        const width = Number.isFinite(proxy?.size?.width) && proxy.size.width > 150 ? Math.floor(proxy.size.width) : fallbackWidth
+        const height = Number.isFinite(proxy?.size?.height) && proxy.size.height > 200 ? Math.floor(proxy.size.height) : fallbackHeight
+        return (
+          <ZStack alignment="topLeading" frame={{ width, height }}>
+            <LargeWidgetContent data={data} width={width} height={height} />
           </ZStack>
         )
       }}

@@ -39,12 +39,102 @@ const RUNTIME_SNAPSHOT_TTL_MS = 6 * 60 * 60 * 1000
 const RUNTIME_LEGACY_HISTORY_KEY = "aliyun_cdt_daily_history_v1"
 const RUNTIME_HISTORY_KEY = "aliyun_cdt_daily_history_v2_"
 
+const RUNTIME_CHINA_OFFSET_MS = 8 * 60 * 60 * 1000
+const RUNTIME_DAY_MS = 24 * 60 * 60 * 1000
+
+export interface ChinaDateParts {
+  year: number
+  month: number
+  day: number
+  weekday: number
+}
+
+// Aliyun billing cycles follow China Standard Time (UTC+8, no DST), regardless of the device time zone.
+export function chinaDateParts(date: Date): ChinaDateParts {
+  const shifted = new Date(date.getTime() + RUNTIME_CHINA_OFFSET_MS)
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    weekday: shifted.getUTCDay()
+  }
+}
+
+export function chinaMonthKey(date: Date, monthOffset = 0): string {
+  const parts = chinaDateParts(date)
+  const target = new Date(Date.UTC(parts.year, parts.month - 1 + monthOffset, 1))
+  return `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, "0")}`
+}
+
+export function chinaMonthProgress(date: Date): {
+  currentDay: number
+  lastDay: number
+  daysRemaining: number
+  monthTimeProgress: number
+} {
+  const parts = chinaDateParts(date)
+  const lastDay = new Date(Date.UTC(parts.year, parts.month, 0)).getUTCDate()
+  return {
+    currentDay: parts.day,
+    lastDay,
+    daysRemaining: Math.max(1, lastDay - parts.day + 1),
+    monthTimeProgress: Math.min(100, Math.max(1, Number(((parts.day / lastDay) * 100).toFixed(1))))
+  }
+}
+
+export function usagePercentage(totalGB: number, thresholdGB: number): number {
+  if (!Number.isFinite(totalGB) || !Number.isFinite(thresholdGB) || thresholdGB <= 0) return 0
+  return Math.max(0, Number(((totalGB / thresholdGB) * 100).toFixed(1)))
+}
+
+export type NormalizedEcsStatus = "Running" | "Stopped" | "Starting" | "Stopping" | "Unknown"
+
+export function normalizeEcsStatus(value: unknown): NormalizedEcsStatus {
+  switch (String(value ?? "").trim().toLowerCase()) {
+    case "running":
+      return "Running"
+    case "stopped":
+      return "Stopped"
+    case "starting":
+      return "Starting"
+    case "stopping":
+      return "Stopping"
+    default:
+      return "Unknown"
+  }
+}
+
+// Error bodies can echo the signed string (including the AccessKey ID); keep only the error code.
+export function aliyunHttpError(action: string, status: number, body: string): Error {
+  let code = ""
+  try {
+    const parsed = JSON.parse(body)
+    if (parsed && typeof parsed.Code === "string") code = parsed.Code
+  } catch {
+    const match = /<Code>([^<]{1,80})<\/Code>/.exec(body || "")
+    if (match) code = match[1]
+  }
+  code = code.replace(/[^\w.\-]/g, "").slice(0, 80)
+  return new Error(`Aliyun [${action}] 错误 (${status})${code ? `: ${code}` : ""}`)
+}
+
+export function widgetErrorHint(message: unknown): string {
+  const text = String(message ?? "")
+  if (/InvalidAccessKeyId|SignatureDoesNotMatch|IncompleteSignature|InvalidAccessKeySecret/.test(text)) return "AccessKey 无效，请在 App 内检查凭据"
+  if (/Forbidden|NoPermission|Unauthorized|\(403\)/.test(text)) return "RAM 权限不足，请在 App 内查看详情"
+  if (/InvalidInstanceId|InvalidRegionId/.test(text)) return "实例或地域不匹配，请在 App 内检查"
+  if (/timed out|Timeout|超时/i.test(text)) return "请求超时，稍后会自动重试"
+  if (/Billing month changed/.test(text)) return "账期刚切换，稍后会自动刷新"
+  return "网络异常或服务暂不可用"
+}
+
 function runtimeDateKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+  const parts = chinaDateParts(date)
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`
 }
 
 function runtimeOffsetDate(date: Date, offset: number): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset)
+  return new Date(date.getTime() + offset * RUNTIME_DAY_MS)
 }
 
 function runtimeRecord(value: unknown): value is Record<string, any> {
@@ -196,7 +286,7 @@ export function createRefreshGate() {
 export function assertSampleBillingMonth(sampledAt: Date, now: Date = new Date()): void {
   if (
     !Number.isFinite(sampledAt.getTime()) || !Number.isFinite(now.getTime()) ||
-    sampledAt.getFullYear() !== now.getFullYear() || sampledAt.getMonth() !== now.getMonth()
+    chinaMonthKey(sampledAt) !== chinaMonthKey(now)
   ) {
     throw new Error("Billing month changed; refresh required")
   }
@@ -285,7 +375,7 @@ function runtimeBuildDailyUsage(snapshots: RuntimeTrafficSample[], now: Date): D
     ) {
       valueGB = Math.max(0, Number((current.totalGB - previous.totalGB).toFixed(2)))
     }
-    return { date: key, label: index === 6 ? "\u4eca" : weekdayLabels[date.getDay()], valueGB, isToday: index === 6 }
+    return { date: key, label: index === 6 ? "\u4eca" : weekdayLabels[chinaDateParts(date).weekday], valueGB, isToday: index === 6 }
   })
 }
 
