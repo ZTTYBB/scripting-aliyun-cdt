@@ -456,6 +456,147 @@ function sumCompleteSevenDays(points: DailyUsagePoint[]): number | null {
   }
   return Number(points.reduce((sum, point) => sum + point.valueGB!, 0).toFixed(2))
 }
+
+// ==================== Multi-account profiles ====================
+
+interface AccountProfileFields {
+  id?: string
+  name?: string
+  site?: string
+}
+
+const RUNTIME_ACCOUNTS_KEY = "aliyun_cdt_accounts_v1"
+const RUNTIME_ACTIVE_CONFIG_KEY = "aliyun_cdt_monitor_config"
+const RUNTIME_ALL_ACCOUNTS_WORDS = ["全部", "所有", "汇总", "all", "*"]
+const RUNTIME_INTL_WORDS = ["国际", "国际站", "国外", "海外", "intl", "international"]
+const RUNTIME_CN_WORDS = ["国内", "中国", "中国站", "cn", "china"]
+
+/** 国际站账号的 BSS 账单接口必须走新加坡入口，否则会报账号不存在。 */
+function bssEndpoint(config: AccountProfileFields): string {
+  return config.site === "intl" ? "business.ap-southeast-1.aliyuncs.com" : "business.aliyuncs.com"
+}
+
+function siteLabel(site: unknown): string {
+  return site === "intl" ? "国际站" : "中国站"
+}
+
+function accountDisplayName(config: AccountProfileFields, index = 0): string {
+  const name = typeof config.name === "string" ? config.name.trim() : ""
+  if (name) return name
+  if (config.site === "intl") return "国际站"
+  return index > 0 ? `账号 ${index + 1}` : "中国站"
+}
+
+/** 按账号区分快照存储键；不含阈值，修改参考值不会丢缓存。 */
+function accountStorageId(config: ConfigIdentityCfg): string {
+  return runtimeFingerprint(JSON.stringify([
+    config.accessKeyId.trim(), config.regionId.trim(), config.ecsInstanceId.trim(), "account"
+  ]))
+}
+
+function scopedStorageKey(base: string, config: ConfigIdentityCfg): string {
+  return `${base}_${accountStorageId(config)}`
+}
+
+function newAccountId(now: number = Date.now()): string {
+  return `acct_${now.toString(36)}${Math.floor(Math.random() * 1679616).toString(36)}`
+}
+
+function runtimeAccountReady(value: unknown): value is Record<string, any> {
+  return runtimeRecord(value) &&
+    typeof value.accessKeyId === "string" && value.accessKeyId.trim() !== "" &&
+    typeof value.accessKeySecret === "string" && value.accessKeySecret.trim() !== "" &&
+    typeof value.ecsInstanceId === "string" && value.ecsInstanceId.trim() !== ""
+}
+
+/** 读取账号列表；旧版只有单账号配置时自动把它当作第一个账号。 */
+function loadAccountProfiles<T extends ConfigIdentityCfg & AccountProfileFields>(defaults: T): T[] {
+  const storage = runtimeStorage()
+  const list: T[] = []
+  const normalize = (value: Record<string, any>, fallbackId: string): T => {
+    const item = { ...defaults, ...value } as T
+    item.id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : fallbackId
+    item.site = item.site === "intl" ? "intl" : "cn"
+    return item
+  }
+  try {
+    const parsed = runtimeParse(storage?.get?.(RUNTIME_ACCOUNTS_KEY))
+    if (Array.isArray(parsed)) {
+      parsed.forEach((value, index) => {
+        if (!runtimeAccountReady(value)) return
+        const item = normalize(value, `acct_${index}`)
+        if (!list.some(existing => existing.id === item.id)) list.push(item)
+      })
+    }
+  } catch {}
+  try {
+    const active = runtimeParse(storage?.get?.(RUNTIME_ACTIVE_CONFIG_KEY))
+    if (runtimeAccountReady(active)) {
+      const item = normalize(active, "default")
+      const known = list.some(existing =>
+        existing.id === item.id || accountStorageId(existing) === accountStorageId(item))
+      if (!known) list.push(item)
+    }
+  } catch {}
+  return list
+}
+
+function saveAccountProfiles(list: Array<ConfigIdentityCfg & AccountProfileFields>): void {
+  try {
+    runtimeStorage()?.set?.(RUNTIME_ACCOUNTS_KEY, JSON.stringify(list))
+  } catch {}
+}
+
+function upsertAccountProfile<T extends AccountProfileFields>(list: T[], profile: T): T[] {
+  const index = list.findIndex(item => item.id === profile.id)
+  if (index < 0) return [...list, profile]
+  const next = list.slice()
+  next[index] = profile
+  return next
+}
+
+function removeAccountProfile<T extends AccountProfileFields>(list: T[], id: string | undefined): T[] {
+  return list.filter(item => item.id !== id)
+}
+
+interface WidgetAccountSelection<T> {
+  mode: "single" | "all"
+  accounts: T[]
+  unmatched?: string
+}
+
+/** 解析小组件 Parameter：留空=App 当前账号，名称/序号/国内/国外=单账号，全部=汇总。 */
+function selectWidgetAccounts<T extends AccountProfileFields>(
+  list: T[],
+  parameter: unknown,
+  activeId?: string
+): WidgetAccountSelection<T> {
+  const raw = typeof parameter === "string" ? parameter.trim() : ""
+  const key = raw.toLowerCase()
+  if (list.length === 0) return { mode: "single", accounts: [] }
+  if (!key) return { mode: "single", accounts: [list.find(item => item.id === activeId) ?? list[0]] }
+  if (RUNTIME_ALL_ACCOUNTS_WORDS.includes(key)) {
+    return list.length > 1 ? { mode: "all", accounts: list } : { mode: "single", accounts: [list[0]] }
+  }
+  const names = list.map((item, index) => accountDisplayName(item, index).toLowerCase())
+  const exact = names.indexOf(key)
+  if (exact >= 0) return { mode: "single", accounts: [list[exact]] }
+  if (/^\d+$/.test(key)) {
+    const position = Number(key)
+    if (position >= 1 && position <= list.length) return { mode: "single", accounts: [list[position - 1]] }
+  }
+  if (RUNTIME_INTL_WORDS.includes(key)) {
+    const match = list.find(item => item.site === "intl")
+    if (match) return { mode: "single", accounts: [match] }
+  }
+  if (RUNTIME_CN_WORDS.includes(key)) {
+    const match = list.find(item => item.site !== "intl")
+    if (match) return { mode: "single", accounts: [match] }
+  }
+  const partial = names.findIndex(name => name.includes(key))
+  if (partial >= 0) return { mode: "single", accounts: [list[partial]] }
+  return { mode: "single", accounts: [], unmatched: raw }
+}
 // END SHARED MONITOR RUNTIME
 
 // BEGIN SHARED BILL QUERIES: generated from bill_queries.ts
@@ -617,6 +758,10 @@ interface AppConfig {
   trafficThresholdGB: number
   vpsCutoffReferenceGB: number
   resetDayOfMonth: number
+  /** 多账号：本机账号标识、显示名称、站点（cn=中国站，intl=国际站） */
+  id?: string
+  name?: string
+  site?: string
 }
 
 const STORAGE_KEY = "aliyun_cdt_monitor_config"
@@ -637,7 +782,11 @@ function loadSavedConfig(): AppConfig {
       const saved = Storage.get(STORAGE_KEY)
       if (saved) {
         const parsed = typeof saved === "string" ? JSON.parse(saved) : saved
-        return { ...DEFAULT_CONFIG, ...parsed }
+        const cfg: AppConfig = { ...DEFAULT_CONFIG, ...parsed }
+        // 旧版单账号配置没有 id，与 loadAccountProfiles 的迁移规则保持一致。
+        if (!cfg.id) cfg.id = "default"
+        cfg.site = cfg.site === "intl" ? "intl" : "cn"
+        return cfg
       }
     }
   } catch (e) {
@@ -649,6 +798,8 @@ function loadSavedConfig(): AppConfig {
 function saveConfigToStorage(cfg: AppConfig): void {
   try {
     if (typeof Storage !== "undefined" && Storage?.set) {
+      // 先读出旧列表（含尚未迁移的旧版单账号），再写入当前账号，避免添加新账号时丢掉旧账号。
+      if (cfg.id) saveAccountProfiles(upsertAccountProfile(loadAccountProfiles<AppConfig>(DEFAULT_CONFIG), cfg))
       Storage.set(STORAGE_KEY, JSON.stringify(cfg))
     }
   } catch (e) {
@@ -899,6 +1050,7 @@ interface MonitorData {
   financialBalance?: AccountBalanceInfo | null
   financialBill?: MonthlyBillInfo | null
   financialBillStatus: "available" | "unavailable"
+  accountName?: string
 }
 
 const SNAPSHOT_STORAGE_KEY = "aliyun_cdt_dashboard_cache"
@@ -942,13 +1094,13 @@ function getInstancePublicIp(instance?: ECSInstanceRecord): string | undefined {
 
 async function queryBillItemsForCycle(config: AppConfig, billingCycle: string): Promise<{ available: boolean; items: any[] }> {
   const overview = await aliyunRequest(
-    "business.aliyuncs.com", "QueryBillOverview", "2017-12-14", config, { BillingCycle: billingCycle }
+    bssEndpoint(config), "QueryBillOverview", "2017-12-14", config, { BillingCycle: billingCycle }
   ).catch(() => null)
   if (isBillQueryAvailable(overview) && overview.Data.Items.Item.length > 0) {
     return { available: true, items: overview.Data.Items.Item }
   }
   return queryAccountBillPages(
-    params => aliyunRequest("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, params),
+    params => aliyunRequest(bssEndpoint(config), "QueryAccountBill", "2017-12-14", config, params),
     { BillingCycle: billingCycle, IsGroupByProduct: true }
   )
 }
@@ -1004,7 +1156,7 @@ async function fetchMonitorData(config: AppConfig, includeFinancial: boolean = t
         CreditAmount?: string
         Currency?: string
       }
-    }>("business.aliyuncs.com", "QueryAccountBalance", "2017-12-14", config).catch(() => null)
+    }>(bssEndpoint(config), "QueryAccountBalance", "2017-12-14", config).catch(() => null)
 
     if (balRes?.Data) {
       const cash = parseFloat(balRes.Data.AvailableCashAmount || "0")
@@ -1096,7 +1248,7 @@ async function fetchMonitorData(config: AppConfig, includeFinancial: boolean = t
           dateQueries.map(async q => {
             try {
               const dayResult = await queryAccountBillPages(
-                params => aliyunRequest("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, params),
+                params => aliyunRequest(bssEndpoint(config), "QueryAccountBill", "2017-12-14", config, params),
                 {
                   BillingCycle: q.billingCycle,
                   Granularity: "DAILY",
@@ -1402,6 +1554,7 @@ interface MediumWidgetData {
   isCached?: boolean
   ecsStatus: string
   color: string
+  accountName?: string
 }
 
 // iOS system fill tones: one neutral surface for every panel, colour only for state.
@@ -1563,7 +1716,7 @@ function MediumWidgetContent({
       <HStack spacing={5} alignment="center" frame={{ width: layout.contentWidth, height: layout.headerHeight }}>
         <Image systemName="cloud.fill" font={12} widgetAccentable foregroundStyle={MEDIUM_COLORS.blue} />
         <Text font={12} fontWeight="semibold" lineLimit={1} foregroundStyle="label" frame={{ maxWidth: Infinity, alignment: "leading" }}>
-          阿里云 CDT
+          {data.accountName ? `阿里云 CDT · ${data.accountName}` : "阿里云 CDT"}
         </Text>
         <HStack spacing={4} alignment="center">
           <Circle widgetAccentable fill={status.color} frame={{ width: 6, height: 6 }} />
@@ -1648,7 +1801,7 @@ function WidgetTitleRow({ data, compact = false }: { data: MediumWidgetData; com
     <HStack spacing={5} alignment="center" frame={{ maxWidth: Infinity }}>
       <Image systemName="cloud.fill" font={compact ? 11 : 13} widgetAccentable foregroundStyle={MEDIUM_COLORS.blue} />
       <Text font={compact ? 11 : 13} fontWeight="semibold" lineLimit={1} foregroundStyle="label">
-        {compact ? "CDT" : "阿里云 CDT"}
+        {compact ? (data.accountName || "CDT") : (data.accountName ? `阿里云 CDT · ${data.accountName}` : "阿里云 CDT")}
       </Text>
       <Spacer />
       <HStack spacing={4} alignment="center">
@@ -1840,6 +1993,144 @@ function LargeWidgetView({ data }: { data: SystemWidgetData }) {
   )
 }
 
+// ==================== Multi-account summary: one panel per account ====================
+
+export interface AccountWidgetItem {
+  name: string
+  site?: string
+  data: MediumWidgetData | null
+  error?: string
+}
+
+function accountSiteTag(site?: string): string {
+  return site === "intl" ? "国际站" : "中国站"
+}
+
+function latestUpdateLabel(items: AccountWidgetItem[]): string {
+  let latest = 0
+  let cached = false
+  for (const item of items) {
+    if (!item.data) continue
+    const date = item.data.updatedAt instanceof Date ? item.data.updatedAt : new Date(item.data.updatedAt)
+    if (Number.isFinite(date.getTime()) && date.getTime() > latest) latest = date.getTime()
+    if (item.data.isCached) cached = true
+  }
+  return latest > 0 ? `${cached ? "含缓存 · " : ""}${mediumUpdateTime(new Date(latest))}` : "--:--"
+}
+
+function AccountPanel({
+  item, width, height, compact
+}: { item: AccountWidgetItem; width: number; height: number; compact: boolean }) {
+  const inset = compact ? 6 : 10
+  const roomy = !compact && height >= 110
+  const innerWidth = Math.max(40, width - inset * 2)
+  const innerHeight = Math.max(24, height - inset * 2)
+  const data = item.data
+  const status = mediumStatus(data?.ecsStatus ?? "Unknown")
+  return (
+    <ZStack alignment="center" frame={{ width, height }}>
+      <RoundedRectangle cornerRadius={compact ? 10 : 12} style="continuous" fill={MEDIUM_COLORS.neutralPanel} frame={{ width, height }} />
+      <VStack alignment="leading" spacing={0} frame={{ width: innerWidth, height: innerHeight, alignment: "topLeading" }}>
+        <HStack spacing={4} alignment="center" frame={{ width: innerWidth }}>
+          <Circle widgetAccentable fill={data ? status.color : "systemRed"} frame={{ width: 6, height: 6 }} />
+          <Text font={compact ? 11 : 12} fontWeight="semibold" lineLimit={1} minScaleFactor={0.8} foregroundStyle="label">
+            {item.name}
+          </Text>
+          <Spacer />
+          <Text font={9} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+            {!data ? accountSiteTag(item.site) : compact ? `${data.percentage.toFixed(0)}%` : `${status.label}${data.isCached ? " · 缓存" : ""}`}
+          </Text>
+        </HStack>
+        <Spacer />
+        {data ? (
+          <VStack alignment="leading" spacing={compact ? 3 : 4}>
+            <HStack alignment="lastTextBaseline" spacing={2}>
+              <Text font={compact ? 17 : 20} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.6} foregroundStyle="label">
+                {data.totalGB.toFixed(2)}
+              </Text>
+              <Text font={compact ? 9 : 10} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+                / {data.thresholdGB} GB
+              </Text>
+            </HStack>
+            <UsageBar data={data} width={innerWidth} height={compact ? 4 : 5} />
+            {!compact && <HStack spacing={2} alignment="center" frame={{ width: innerWidth }}>
+              <Text font={9} monospacedDigit lineLimit={1} minScaleFactor={0.8} foregroundStyle="secondaryLabel" frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                余 {data.remainingGB.toFixed(1)} GB
+              </Text>
+              <Text font={9} fontWeight="semibold" monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+                {data.percentage.toFixed(1)}%
+              </Text>
+            </HStack>}
+            {roomy && (
+              <Text font={9} monospacedDigit lineLimit={1} minScaleFactor={0.8} foregroundStyle="tertiaryLabel">
+                日均可用 {data.dailyBudgetGB} GB · 近 7 日 {formatDailyUsage(data.sevenDayTotalGB)} GB
+              </Text>
+            )}
+          </VStack>
+        ) : (
+          <VStack alignment="leading" spacing={2}>
+            <Text font={compact ? 12 : 13} fontWeight="semibold" foregroundStyle="systemRed" lineLimit={1}>获取失败</Text>
+            <Text font={9} foregroundStyle="secondaryLabel" lineLimit={2} minScaleFactor={0.8}>
+              {item.error || "请在 App 内检查该账号配置"}
+            </Text>
+          </VStack>
+        )}
+      </VStack>
+    </ZStack>
+  )
+}
+
+function MultiAccountHeader({ items, width, compact }: { items: AccountWidgetItem[]; width: number; compact: boolean }) {
+  const days = items.find(item => item.data)?.data?.daysRemaining
+  return (
+    <HStack spacing={5} alignment="center" frame={{ width }}>
+      <Image systemName="cloud.fill" font={compact ? 11 : 12} widgetAccentable foregroundStyle={MEDIUM_COLORS.blue} />
+      <Text font={compact ? 11 : 12} fontWeight="semibold" lineLimit={1} foregroundStyle="label">
+        {compact ? "CDT" : "阿里云 CDT"}
+      </Text>
+      <Spacer />
+      <Text font={compact ? 9 : 10} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+        {compact || days === undefined ? latestUpdateLabel(items) : `距结算 ${days} 天 · ${latestUpdateLabel(items)}`}
+      </Text>
+    </HStack>
+  )
+}
+
+function MultiAccountWidgetView({ items, family }: { items: AccountWidgetItem[]; family?: string }) {
+  return (
+    <GeometryReader widgetBackground="systemBackground">
+      {proxy => {
+        const display = Widget.displaySize
+        const fallbackWidth = display?.width > 0 ? display.width - 32 : 297
+        const fallbackHeight = display?.height > 0 ? display.height - 32 : 123
+        const width = Number.isFinite(proxy?.size?.width) && proxy.size.width > 80 ? Math.floor(proxy.size.width) : fallbackWidth
+        const height = Number.isFinite(proxy?.size?.height) && proxy.size.height > 60 ? Math.floor(proxy.size.height) : fallbackHeight
+        const compact = family === "systemSmall" || width < 200
+        const gap = compact ? 6 : 8
+        const headerHeight = compact ? 16 : 18
+        const visible = items.slice(0, compact ? 2 : family === "systemLarge" ? 4 : 2)
+        const count = Math.max(1, visible.length)
+        // 中号两账号左右并排；小号和大号上下排列。
+        const sideBySide = !compact && family !== "systemLarge" && count <= 2
+        const bodyHeight = height - headerHeight - gap
+        const panelWidth = sideBySide ? (width - gap * (count - 1)) / count : width
+        const panelHeight = sideBySide ? bodyHeight : (bodyHeight - gap * (count - 1)) / count
+        const panels = visible.map((item, index) => (
+          <AccountPanel key={`${index}-${item.name}`} item={item} width={panelWidth} height={panelHeight} compact={compact} />
+        ))
+        return (
+          <VStack alignment="leading" spacing={gap} frame={{ width, height, alignment: "topLeading" }}>
+            <MultiAccountHeader items={items} width={width} compact={compact} />
+            {sideBySide
+              ? <HStack spacing={gap} alignment="top">{panels}</HStack>
+              : <VStack spacing={gap} alignment="leading">{panels}</VStack>}
+          </VStack>
+        )
+      }}
+    </GeometryReader>
+  )
+}
+
 function MediumWidget({ data }: { data: MonitorData }) {
   return <MediumWidgetView data={data} />
 }
@@ -1880,7 +2171,7 @@ function AccessoryRectangularWidget({ data }: { data: MonitorData }) {
           </HStack>
         </HStack>
         <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">
-          参考余量 {data.remainingGB.toFixed(1)} GB · 距结算 {data.daysRemaining} 天
+          {data.accountName ? `${data.accountName} · ` : ""}参考余量 {data.remainingGB.toFixed(1)} GB · 距结算 {data.daysRemaining} 天
         </Text>
       </VStack>
     </HStack>
@@ -1892,7 +2183,7 @@ function AccessoryInlineWidget({ data }: { data: MonitorData }) {
 
   return (
     <Text lineLimit={1} monospacedDigit>
-      CDT {data.totalGB.toFixed(2)}/{data.thresholdGB}G · {data.isCached ? "缓存" : status.shortLabel}
+      {data.accountName ? `${data.accountName} · ` : ""}CDT {data.totalGB.toFixed(2)}/{data.thresholdGB}G · {data.isCached ? "缓存" : status.shortLabel}
     </Text>
   )
 }
@@ -2082,11 +2373,15 @@ function SettingsNotice({ kind, text }: { kind: "error" | "success"; text: strin
 function SettingsComponent({
   currentConfig,
   onSave,
-  onCancel
+  onCancel,
+  onDelete,
+  cancelable
 }: {
   currentConfig: AppConfig
   onSave: (newConfig: AppConfig) => void
   onCancel: () => void
+  onDelete?: (id: string) => void
+  cancelable?: boolean
 }) {
   const [ak, setAk] = useState(currentConfig.accessKeyId || "")
   const [sk, setSk] = useState(currentConfig.accessKeySecret || "")
@@ -2096,6 +2391,8 @@ function SettingsComponent({
   const [cutoffReference, setCutoffReference] = useState(String(currentConfig.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB))
   const [errorNotice, setErrorNotice] = useState<string | null>(null)
   const [successNotice, setSuccessNotice] = useState<string | null>(null)
+  const [accountName, setAccountName] = useState(currentConfig.name || "")
+  const [site, setSite] = useState(currentConfig.site === "intl" ? "intl" : "cn")
 
   // 智能剪贴板识别与导入
   const handleSmartPaste = async () => {
@@ -2239,6 +2536,39 @@ function SettingsComponent({
     }
   }
 
+  const handleSelectSite = async () => {
+    if (typeof Dialog === "undefined" || !Dialog.actionSheet) {
+      setSite(site === "intl" ? "cn" : "intl")
+      return
+    }
+    const idx = await Dialog.actionSheet({
+      title: "账号所属站点",
+      message: "国际站账号的账单接口走新加坡入口，选错会导致余额和账单查询失败。",
+      cancelButton: true,
+      actions: [
+        { label: `中国站 aliyun.com${site === "cn" ? " ✓" : ""}` },
+        { label: `国际站 alibabacloud.com${site === "intl" ? " ✓" : ""}` }
+      ]
+    })
+    if (idx === 0) setSite("cn")
+    else if (idx === 1) setSite("intl")
+  }
+
+  const handleDelete = async () => {
+    if (!onDelete || !currentConfig.id) return
+    const label = accountDisplayName({ name: accountName, site })
+    let confirmed = true
+    if (typeof Dialog !== "undefined" && Dialog.confirm) {
+      confirmed = await Dialog.confirm({
+        title: `删除账号「${label}」？`,
+        message: "只删除本机保存的凭据和设置，不影响阿里云账号本身。",
+        cancelLabel: "取消",
+        confirmLabel: "删除"
+      } as any)
+    }
+    if (confirmed) onDelete(currentConfig.id)
+  }
+
   const handleSave = () => {
     if (!ak.trim() || !sk.trim() || !ecsId.trim()) {
       setErrorNotice("请填写完整的 AccessKey ID、Secret 与 ECS 实例 ID！")
@@ -2261,7 +2591,10 @@ function SettingsComponent({
       ecsInstanceId: ecsId.trim(),
       trafficThresholdGB: numThreshold,
       vpsCutoffReferenceGB: numCutoffReference,
-      resetDayOfMonth: 1
+      resetDayOfMonth: 1,
+      id: currentConfig.id || newAccountId(),
+      name: accountName.trim(),
+      site
     }
     saveConfigToStorage(newCfg)
     onSave(newCfg)
@@ -2330,6 +2663,34 @@ function SettingsComponent({
       action={() => promptField("VPS 熔断参考线 (GB)", "按 VPS 脚本阈值手动填写；此值只用于手机告警，不会同步或关机", cutoffReference, cutoffReference, setCutoffReference)}
     />
   )
+  const nameRow = (
+    <SettingsRow
+      icon="person.crop.circle.fill"
+      iconColor="systemBlue"
+      title="账号名称"
+      detail={accountName || accountDisplayName({ site })}
+      detailColor={accountName ? "secondaryLabel" : "tertiaryLabel"}
+      accessibilityLabel="设置账号名称"
+      action={() => promptField("账号名称", "用于切换账号和小组件 Parameter，例如：国内、国外", accountName, site === "intl" ? "国外" : "国内", setAccountName)}
+    />
+  )
+  const siteRow = (
+    <SettingsRow
+      icon="building.columns.fill"
+      iconColor="systemTeal"
+      title="站点"
+      detail={siteLabel(site)}
+      accessibilityLabel="设置账号站点"
+      action={handleSelectSite}
+    />
+  )
+  const deleteRow = onDelete && currentConfig.id ? (
+    <Button action={handleDelete} buttonStyle="plain" accessibilityLabel="删除此账号" frame={{ maxWidth: Infinity }}>
+      <Text font="body" foregroundStyle="systemRed" padding={{ vertical: 2 }} frame={{ maxWidth: Infinity, alignment: "center" }}>
+        删除此账号
+      </Text>
+    </Button>
+  ) : null
   const pasteRow = (
     <Button action={handleSmartPaste} buttonStyle="plain" accessibilityLabel="一键识别剪贴板" frame={{ maxWidth: Infinity }}>
       <HStack alignment="center" spacing={12} padding={{ vertical: 2 }} frame={{ maxWidth: Infinity }}>
@@ -2355,7 +2716,7 @@ function SettingsComponent({
   )
   const footnote = (text: string) => <Text font="footnote" foregroundStyle="secondaryLabel">{text}</Text>
   const toolbar = {
-    topBarLeading: isConfigReady(currentConfig)
+    topBarLeading: cancelable ?? isConfigReady(currentConfig)
       ? [
           <Button key="settings-back" action={onCancel} accessibilityLabel="返回">
             <Image systemName="chevron.backward" foregroundStyle="label" />
@@ -2389,6 +2750,14 @@ function SettingsComponent({
           </Section>
         )}
 
+        <Section
+          header={<Text>账号</Text>}
+          footer={footnote("名称会显示在切换菜单和小组件上。编辑小组件时在 Parameter 填名称可固定显示该账号，填「全部」显示所有账号。")}
+        >
+          {nameRow}
+          {siteRow}
+        </Section>
+
         <Section footer={footnote("复制包含阿里云凭据的文本后轻点，自动填入可识别的 AK、SK、实例 ID 与地域。")}>
           {pasteRow}
         </Section>
@@ -2417,6 +2786,8 @@ function SettingsComponent({
           {cutoffRow}
         </Section>
 
+        {deleteRow && <Section>{deleteRow}</Section>}
+
         <Section footer={versionFooter}>
           {saveRow}
         </Section>
@@ -2439,6 +2810,14 @@ function SettingsComponent({
             {successNotice && <SettingsCardRow><SettingsNotice kind="success" text={successNotice} /></SettingsCardRow>}
           </SettingsCard>
         )}
+
+        <DashboardSectionHeader title="账号" />
+        <SettingsCard>
+          <SettingsCardRow>{nameRow}</SettingsCardRow>
+          <Divider padding={{ leading: 57 }} />
+          <SettingsCardRow>{siteRow}</SettingsCardRow>
+        </SettingsCard>
+        <SectionFootnote>编辑小组件时在 Parameter 填账号名称可固定显示该账号，填「全部」显示所有账号。</SectionFootnote>
 
         <SettingsCard>
           <SettingsCardRow>{pasteRow}</SettingsCardRow>
@@ -2469,7 +2848,12 @@ function SettingsComponent({
         </SettingsCard>
         <SectionFootnote>参考线仅用于本机展示和提醒，不代表阿里云账号完整免费额度，也不会控制 ECS。VPS 独立负责保活与熔断。</SectionFootnote>
 
-        <VStack padding={{ top: 20 }}>
+        <VStack padding={{ top: 20 }} spacing={16}>
+          {deleteRow && (
+            <SettingsCard>
+              <SettingsCardRow>{deleteRow}</SettingsCardRow>
+            </SettingsCard>
+          )}
           <SettingsCard>
             <SettingsCardRow>{saveRow}</SettingsCardRow>
           </SettingsCard>
@@ -2510,7 +2894,9 @@ function restoreCachedMonitorData(raw: unknown, config: AppConfig): MonitorData 
 function getCachedDashboardSnapshot(config: AppConfig, key: string = SNAPSHOT_STORAGE_KEY): { data: MonitorData | null; lastUpdated: Date | null } {
   try {
     if (typeof Storage !== "undefined" && Storage?.get) {
-      const raw = Storage.get(key)
+      // 先读本账号快照；旧版未分账号的键仍可兜底，readSnapshot 会校验账号指纹。
+      const scoped = Storage.get(scopedStorageKey(key, config))
+      const raw = readSnapshot(scoped, config) ? scoped : Storage.get(key)
       if (raw) {
         const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
         const data = restoreCachedMonitorData(parsed, config)
@@ -2539,6 +2925,8 @@ function AppDashboard() {
     }
   })
   const [isCopied, setIsCopied] = useState(false)
+  const [accounts, setAccounts] = useState<AppConfig[]>(() => loadAccountProfiles<AppConfig>(DEFAULT_CONFIG))
+  const [editingNew, setEditingNew] = useState<AppConfig | null>(null)
 
   const togglePrivacy = () => {
     const next = !isPrivacy
@@ -2691,6 +3079,7 @@ function AppDashboard() {
         setLastUpdated(res.updatedAt)
         try {
           if (typeof Storage !== "undefined" && Storage?.set) {
+Storage.set(scopedStorageKey(SNAPSHOT_STORAGE_KEY, cfg), JSON.stringify(createSnapshot(cfg, res)))
             Storage.set(SNAPSHOT_STORAGE_KEY, JSON.stringify(createSnapshot(cfg, res)))
           }
         } catch {}
@@ -2714,14 +3103,85 @@ function AppDashboard() {
     return () => refreshGate.invalidate()
   }, [])
 
+  const switchAccount = (next: AppConfig) => {
+    refreshGate.invalidate()
+    try {
+      if (typeof Storage !== "undefined" && Storage?.set) Storage.set(STORAGE_KEY, JSON.stringify(next))
+    } catch {}
+    const cached = getCachedDashboardSnapshot(next)
+    setEditingNew(null)
+    setConfig(next)
+    setData(cached.data)
+    setLastUpdated(cached.lastUpdated)
+    setErrorMsg(null)
+    setIsCopied(false)
+    setShowSettings(false)
+    refresh(next)
+  }
+
+  const deleteAccount = (id: string) => {
+    const remaining = removeAccountProfile(loadAccountProfiles<AppConfig>(DEFAULT_CONFIG), id)
+    saveAccountProfiles(remaining)
+    setAccounts(remaining)
+    if (remaining.length > 0) {
+      switchAccount(remaining[0])
+      return
+    }
+    refreshGate.invalidate()
+    try {
+      if (typeof Storage !== "undefined" && Storage?.set) Storage.set(STORAGE_KEY, "")
+    } catch {}
+    setConfig({ ...DEFAULT_CONFIG })
+    setData(null)
+    setLastUpdated(null)
+    setErrorMsg(null)
+    setEditingNew(null)
+    setShowSettings(true)
+  }
+
+  const startAddAccount = () => {
+    setEditingNew({ ...DEFAULT_CONFIG, id: newAccountId(), site: accounts.some(item => item.site === "intl") ? "cn" : "intl" })
+    setShowSettings(true)
+  }
+
+  // 账号切换：列出已保存账号，末尾提供「添加账号」。
+  const handleSwitchAccount = async () => {
+    const list = loadAccountProfiles<AppConfig>(DEFAULT_CONFIG)
+    setAccounts(list)
+    if (typeof Dialog === "undefined" || !Dialog.actionSheet) {
+      startAddAccount()
+      return
+    }
+    const actions = list.map((item, index) => ({
+      label: `${accountDisplayName(item, index)} · ${siteLabel(item.site)}${item.id === config.id ? " ✓" : ""}`
+    }))
+    actions.push({ label: "添加账号…" })
+    const idx = await Dialog.actionSheet({
+      title: "切换阿里云账号",
+      message: "小组件可在「编辑小组件 → Parameter」填账号名称固定显示，填「全部」同时显示所有账号。",
+      cancelButton: true,
+      actions
+    })
+    if (idx === null || idx === undefined || idx < 0) return
+    if (idx === list.length) {
+      startAddAccount()
+    } else if (list[idx] && list[idx].id !== config.id) {
+      switchAccount(list[idx])
+    }
+  }
+
   if (showSettings) {
     return (
       <NavigationStack>
         <SettingsComponent
-          currentConfig={config}
+          key={(editingNew || config).id || "default"}
+          currentConfig={editingNew || config}
+          cancelable={editingNew ? isConfigReady(config) : undefined}
           onSave={newCfg => {
             refreshGate.invalidate()
             const cached = getCachedDashboardSnapshot(newCfg)
+            setAccounts(loadAccountProfiles<AppConfig>(DEFAULT_CONFIG))
+            setEditingNew(null)
             setConfig(newCfg)
             setData(cached.data)
             setLastUpdated(cached.lastUpdated)
@@ -2730,7 +3190,11 @@ function AppDashboard() {
             setShowSettings(false)
             refresh(newCfg)
           }}
-          onCancel={() => setShowSettings(false)}
+          onDelete={editingNew || accounts.length === 0 ? undefined : deleteAccount}
+          onCancel={() => {
+            setEditingNew(null)
+            setShowSettings(!isConfigReady(config))
+          }}
         />
       </NavigationStack>
     )
@@ -2793,9 +3257,16 @@ function AppDashboard() {
     <NavigationStack>
       <ZStack
         frame={{ maxWidth: Infinity, maxHeight: Infinity }}
-        navigationTitle="阿里云 CDT"
+        navigationTitle={accounts.length > 1
+          ? accountDisplayName(config, Math.max(0, accounts.findIndex(item => item.id === config.id)))
+          : "阿里云 CDT"}
         navigationBarTitleDisplayMode="large"
         toolbar={{
+          topBarLeading: [
+            <Button key="dashboard-accounts" action={handleSwitchAccount} accessibilityLabel="切换账号">
+              <Image systemName={accounts.length > 1 ? "person.2" : "person.crop.circle.badge.plus"} foregroundStyle="label" />
+            </Button>,
+          ],
           topBarTrailing: [
             <Button key="dashboard-refresh" action={() => refresh(config)} disabled={loading} accessibilityLabel="刷新数据">
               <Image systemName="arrow.clockwise" foregroundStyle="label" />
@@ -3029,12 +3500,16 @@ async function main() {
   const isWidget = typeof Widget !== "undefined" && Boolean(Widget?.family)
 
   if (isWidget) {
-    const config = loadSavedConfig()
-    try {
-      if (!isConfigReady(config)) {
-        presentWidget(<NotConfiguredWidget />)
-        return
-      }
+    const accounts = loadAccountProfiles<AppConfig>(DEFAULT_CONFIG)
+    if (accounts.length === 0) {
+      presentWidget(<NotConfiguredWidget />)
+      return
+    }
+    // 长按小组件 → 编辑小组件 → Parameter：留空/国内/国外/账号名/序号/全部
+    const selection = selectWidgetAccounts(accounts, (Widget as any)?.parameter, loadSavedConfig().id)
+    const nameOf = (cfg: AppConfig) => accountDisplayName(cfg, accounts.indexOf(cfg))
+
+    const loadOne = async (config: AppConfig): Promise<MonitorData> => {
       const data = await fetchMonitorData(config, false)
       assertSampleBillingMonth(data.updatedAt)
       data.dailyUsage = recordTrafficSample(config, data.totalGB, data.updatedAt)
@@ -3042,27 +3517,28 @@ async function main() {
       data.todayEstimatedGB = data.dailyUsage[data.dailyUsage.length - 1]?.valueGB ?? null
       try {
         if (typeof Storage !== "undefined" && Storage?.set) {
-          const previous = readSnapshot<MonitorData>(Storage.get(WIDGET_SNAPSHOT_STORAGE_KEY), config)
+          const key = scopedStorageKey(WIDGET_SNAPSHOT_STORAGE_KEY, config)
+          const previous = readSnapshot<MonitorData>(Storage.get(key), config)
           if (!previous || previous.updatedAt.getTime() < data.updatedAt.getTime()) {
-            Storage.set(WIDGET_SNAPSHOT_STORAGE_KEY, JSON.stringify(createSnapshot(config, data)))
+            Storage.set(key, JSON.stringify(createSnapshot(config, data)))
           }
         }
       } catch {}
-      presentMonitorWidget(data)
-    } catch (err: any) {
-      console.error("小组件加载失败:", err)
-      // 弱网容灾：尝试降级渲染本地持久化快照，避免组件变红
+      return data
+    }
+    // 弱网容灾：尝试降级渲染本地持久化快照，避免组件变红
+    const cachedOne = (config: AppConfig): MonitorData | null => {
       try {
         for (const key of [WIDGET_SNAPSHOT_STORAGE_KEY, SNAPSHOT_STORAGE_KEY]) {
           const cached = getCachedDashboardSnapshot(config, key).data
-          if (cached) {
-            presentMonitorWidget(cached)
-            return
-          }
+          if (cached) return cached
         }
       } catch {}
-
-      presentWidget(
+      return null
+    }
+    const errorView = (title: string, message: string) => Widget.family === "accessoryInline"
+      ? <Text lineLimit={1}>CDT {title}</Text>
+      : (
         <VStack
           alignment="leading"
           spacing={6}
@@ -3072,15 +3548,62 @@ async function main() {
         >
           <HStack spacing={6} alignment="center">
             <Image systemName="exclamationmark.triangle.fill" font={13} foregroundStyle="systemRed" />
-            <Text font="caption1" bold foregroundStyle="systemRed">
-              获取失败
+            <Text font="caption1" bold foregroundStyle="systemRed" lineLimit={1}>
+              {title}
             </Text>
           </HStack>
-          <Text font="caption2" foregroundStyle="secondaryLabel" lineLimit={3}>
-            {widgetErrorHint(err?.message)}
+          <Text font="caption2" foregroundStyle="secondaryLabel" lineLimit={4}>
+            {message}
           </Text>
         </VStack>
       )
+
+    if (selection.accounts.length === 0) {
+      const names = accounts.map(nameOf).join("、")
+      presentWidget(errorView(`未找到账号「${selection.unmatched}」`, `Parameter 可填：${names}、全部；留空显示 App 当前账号。`))
+      return
+    }
+
+    if (selection.mode === "all") {
+      const items: AccountWidgetItem[] = await Promise.all(selection.accounts.map(async config => {
+        try {
+          return { name: nameOf(config), site: config.site, data: await loadOne(config) }
+        } catch (err: any) {
+          const cached = cachedOne(config)
+          return { name: nameOf(config), site: config.site, data: cached, error: cached ? undefined : widgetErrorHint(err?.message) }
+        }
+      }))
+      if (Widget.family === "accessoryInline") {
+        presentWidget(
+          <Text lineLimit={1} monospacedDigit>
+            {items.map(item => item.data ? `${item.name} ${item.data.totalGB.toFixed(1)}/${item.data.thresholdGB}G` : `${item.name} 失败`).join(" · ")}
+          </Text>
+        )
+      } else if (Widget.family === "accessoryCircular" || Widget.family === "accessoryRectangular") {
+        const first = items.find(item => item.data)
+        if (first?.data) presentMonitorWidget({ ...(first.data as MonitorData), accountName: first.name })
+        else presentWidget(errorView("获取失败", items[0]?.error || "请稍后重试"))
+      } else {
+        presentWidget(<MultiAccountWidgetView items={items} family={Widget.family} />)
+      }
+      return
+    }
+
+    const config = selection.accounts[0]
+    const accountName = accounts.length > 1 ? nameOf(config) : undefined
+    try {
+      const data = await loadOne(config)
+      data.accountName = accountName
+      presentMonitorWidget(data)
+    } catch (err: any) {
+      console.error("小组件加载失败:", err)
+      const cached = cachedOne(config)
+      if (cached) {
+        cached.accountName = accountName
+        presentMonitorWidget(cached)
+        return
+      }
+      presentWidget(errorView(accountName ? `${accountName} 获取失败` : "获取失败", widgetErrorHint(err?.message)))
     }
   } else {
     await Navigation.present({

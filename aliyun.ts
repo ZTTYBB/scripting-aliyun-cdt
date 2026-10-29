@@ -4,7 +4,7 @@
  */
 import { AppConfig, DEFAULT_CONFIG } from "./config"
 import { isBillQueryAvailable, queryAccountBillPages, recentBillingDates } from "./bill_queries"
-import { aliyunHttpError, chinaMonthKey, normalizeEcsStatus, usagePercentage, withRequestTimeout } from "./monitor_runtime"
+import { aliyunHttpError, bssEndpoint, chinaMonthKey, normalizeEcsStatus, usagePercentage, withRequestTimeout } from "./monitor_runtime"
 
 // ==================== 1. 纯 TS HMAC-SHA1 算法实现 ====================
 
@@ -523,7 +523,7 @@ export class AliyunService {
         }
       }>(
         {
-          domain: "business.aliyuncs.com",
+          domain: bssEndpoint(this.config),
           action: "QueryAccountBalance",
           version: "2017-12-14",
           method: "POST"
@@ -580,7 +580,7 @@ export class AliyunService {
           }
         }>(
           {
-            domain: "business.aliyuncs.com",
+            domain: bssEndpoint(this.config),
             action: "QueryBillOverview",
             version: "2017-12-14",
             method: "POST",
@@ -601,7 +601,7 @@ export class AliyunService {
         const accountBillData = await queryAccountBillPages(
           params => aliyunRequest(
             {
-              domain: "business.aliyuncs.com",
+              domain: bssEndpoint(this.config),
               action: "QueryAccountBill",
               version: "2017-12-14",
               method: "POST",
@@ -686,7 +686,7 @@ export class AliyunService {
               const dayRes = await queryAccountBillPages(
                 params => aliyunRequest(
                   {
-                    domain: "business.aliyuncs.com",
+                    domain: bssEndpoint(this.config),
                     action: "QueryAccountBill",
                     version: "2017-12-14",
                     method: "POST",

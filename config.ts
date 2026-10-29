@@ -14,6 +14,9 @@ export interface AppConfig {
   trafficThresholdGB: number
   vpsCutoffReferenceGB: number
   resetDayOfMonth: number
+  id?: string
+  name?: string
+  site?: "cn" | "intl"
 }
 
 export const DEFAULT_CONFIG: AppConfig = {

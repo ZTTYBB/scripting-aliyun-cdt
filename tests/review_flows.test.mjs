@@ -246,7 +246,7 @@ function fixture(entry, options = {}) {
       clearTimeout(id)
     },
     async fetch(url, requestOptions) {
-      assert.match(url, /^https:\/\/(?:cdt|business|ecs\.[a-z0-9-]+)\.aliyuncs\.com\/$/)
+      assert.match(url, /^https:\/\/(?:cdt|business(?:\.ap-southeast-1)?|ecs\.[a-z0-9-]+)\.aliyuncs\.com\/$/)
       assert.equal(requestOptions?.method, "POST")
       const params = Object.fromEntries(new URLSearchParams(requestOptions.body))
       requests.push(params)
@@ -514,7 +514,9 @@ test("AllInOne widget main never calls financial APIs, saves its own snapshot, a
   }
   assert.deepEqual(host.requests.map(request => request.Action).sort(), ["DescribeInstances", "ListCdtInternetTraffic"])
   assert.equal(host.values.get(snapshotKey), "independent-dashboard-sentinel")
-  const snapshot = JSON.parse(host.values.get(widgetSnapshotKey))
+  const widgetKeys = [...host.values.keys()].filter(key => key.startsWith(`${widgetSnapshotKey}_`))
+  assert.equal(widgetKeys.length, 1, "widget snapshots are stored per account")
+  const snapshot = JSON.parse(host.values.get(widgetKeys[0]))
   assert.equal(snapshot.version, 2)
   assert.equal(snapshot.data.totalGB, 11)
   assert.equal(host.presented.length, 1)
@@ -533,3 +535,34 @@ test("AllInOne widget main never calls financial APIs, saves its own snapshot, a
   assert.match(screenText(host.presented[2].element), new RegExp(labels.failed))
   assert.doesNotMatch(screenText(host.presented[2].element), /11\.00/)
 })
+
+for (const entry of entryPoints) {
+  test(`${entry.file}: adding an international account keeps the old account and the switcher lists both`, async t => {
+    const host = fixture(entry)
+    t.after(() => host.dispose())
+    host.render()
+    host.hooks.commitEffects()
+    await flushUntil(() => host.state("data") !== null && host.state("loading") === false)
+    // Without Dialog.actionSheet the switcher opens the add-account form directly.
+    await button(host.render(), "\u5207\u6362\u8d26\u53f7").action()
+    const settings = descendants(host.render()).find(node =>
+      typeof node.type === "function" && node.type.name === entry.settings)
+    assert.ok(settings, "add-account form must open")
+    assert.notEqual(settings.props.currentConfig.id, "default", "a new account gets its own id")
+    assert.equal(settings.props.currentConfig.site, "intl")
+    const overseas = { ...newConfig, id: settings.props.currentConfig.id, name: "\u56fd\u5916", site: "intl" }
+    // Persist exactly like the form's save handler does, then hand the result back.
+    const saved = JSON.parse(JSON.stringify(overseas))
+    const before = JSON.parse(host.values.get(configKey))
+    assert.equal(before.accessKeyId, oldConfig.accessKeyId)
+    host.storage.set("aliyun_cdt_accounts_v1", JSON.stringify([{ ...before, id: "default", site: "cn" }, saved]))
+    host.storage.set(configKey, JSON.stringify(saved))
+    settings.props.onSave(saved)
+    await flushUntil(() => host.state("loading") === false && host.state("data")?.totalGB === 22)
+    const balance = host.requests.find(request =>
+      request.Action === "QueryAccountBalance" && request.AccessKeyId === newConfig.accessKeyId)
+    assert.ok(balance, "the international account must still query its balance")
+    const list = JSON.parse(host.values.get("aliyun_cdt_accounts_v1"))
+    assert.equal(list.map(item => item.accessKeyId).join(","), `${oldConfig.accessKeyId},${newConfig.accessKeyId}`)
+  })
+}

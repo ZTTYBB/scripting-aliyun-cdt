@@ -418,3 +418,144 @@ export function sumCompleteSevenDays(points: DailyUsagePoint[]): number | null {
   }
   return Number(points.reduce((sum, point) => sum + point.valueGB!, 0).toFixed(2))
 }
+
+// ==================== Multi-account profiles ====================
+
+export interface AccountProfileFields {
+  id?: string
+  name?: string
+  site?: string
+}
+
+const RUNTIME_ACCOUNTS_KEY = "aliyun_cdt_accounts_v1"
+const RUNTIME_ACTIVE_CONFIG_KEY = "aliyun_cdt_monitor_config"
+const RUNTIME_ALL_ACCOUNTS_WORDS = ["全部", "所有", "汇总", "all", "*"]
+const RUNTIME_INTL_WORDS = ["国际", "国际站", "国外", "海外", "intl", "international"]
+const RUNTIME_CN_WORDS = ["国内", "中国", "中国站", "cn", "china"]
+
+/** 国际站账号的 BSS 账单接口必须走新加坡入口，否则会报账号不存在。 */
+export function bssEndpoint(config: AccountProfileFields): string {
+  return config.site === "intl" ? "business.ap-southeast-1.aliyuncs.com" : "business.aliyuncs.com"
+}
+
+export function siteLabel(site: unknown): string {
+  return site === "intl" ? "国际站" : "中国站"
+}
+
+export function accountDisplayName(config: AccountProfileFields, index = 0): string {
+  const name = typeof config.name === "string" ? config.name.trim() : ""
+  if (name) return name
+  if (config.site === "intl") return "国际站"
+  return index > 0 ? `账号 ${index + 1}` : "中国站"
+}
+
+/** 按账号区分快照存储键；不含阈值，修改参考值不会丢缓存。 */
+export function accountStorageId(config: ConfigIdentityCfg): string {
+  return runtimeFingerprint(JSON.stringify([
+    config.accessKeyId.trim(), config.regionId.trim(), config.ecsInstanceId.trim(), "account"
+  ]))
+}
+
+export function scopedStorageKey(base: string, config: ConfigIdentityCfg): string {
+  return `${base}_${accountStorageId(config)}`
+}
+
+export function newAccountId(now: number = Date.now()): string {
+  return `acct_${now.toString(36)}${Math.floor(Math.random() * 1679616).toString(36)}`
+}
+
+function runtimeAccountReady(value: unknown): value is Record<string, any> {
+  return runtimeRecord(value) &&
+    typeof value.accessKeyId === "string" && value.accessKeyId.trim() !== "" &&
+    typeof value.accessKeySecret === "string" && value.accessKeySecret.trim() !== "" &&
+    typeof value.ecsInstanceId === "string" && value.ecsInstanceId.trim() !== ""
+}
+
+/** 读取账号列表；旧版只有单账号配置时自动把它当作第一个账号。 */
+export function loadAccountProfiles<T extends ConfigIdentityCfg & AccountProfileFields>(defaults: T): T[] {
+  const storage = runtimeStorage()
+  const list: T[] = []
+  const normalize = (value: Record<string, any>, fallbackId: string): T => {
+    const item = { ...defaults, ...value } as T
+    item.id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : fallbackId
+    item.site = item.site === "intl" ? "intl" : "cn"
+    return item
+  }
+  try {
+    const parsed = runtimeParse(storage?.get?.(RUNTIME_ACCOUNTS_KEY))
+    if (Array.isArray(parsed)) {
+      parsed.forEach((value, index) => {
+        if (!runtimeAccountReady(value)) return
+        const item = normalize(value, `acct_${index}`)
+        if (!list.some(existing => existing.id === item.id)) list.push(item)
+      })
+    }
+  } catch {}
+  try {
+    const active = runtimeParse(storage?.get?.(RUNTIME_ACTIVE_CONFIG_KEY))
+    if (runtimeAccountReady(active)) {
+      const item = normalize(active, "default")
+      const known = list.some(existing =>
+        existing.id === item.id || accountStorageId(existing) === accountStorageId(item))
+      if (!known) list.push(item)
+    }
+  } catch {}
+  return list
+}
+
+export function saveAccountProfiles(list: Array<ConfigIdentityCfg & AccountProfileFields>): void {
+  try {
+    runtimeStorage()?.set?.(RUNTIME_ACCOUNTS_KEY, JSON.stringify(list))
+  } catch {}
+}
+
+export function upsertAccountProfile<T extends AccountProfileFields>(list: T[], profile: T): T[] {
+  const index = list.findIndex(item => item.id === profile.id)
+  if (index < 0) return [...list, profile]
+  const next = list.slice()
+  next[index] = profile
+  return next
+}
+
+export function removeAccountProfile<T extends AccountProfileFields>(list: T[], id: string | undefined): T[] {
+  return list.filter(item => item.id !== id)
+}
+
+export interface WidgetAccountSelection<T> {
+  mode: "single" | "all"
+  accounts: T[]
+  unmatched?: string
+}
+
+/** 解析小组件 Parameter：留空=App 当前账号，名称/序号/国内/国外=单账号，全部=汇总。 */
+export function selectWidgetAccounts<T extends AccountProfileFields>(
+  list: T[],
+  parameter: unknown,
+  activeId?: string
+): WidgetAccountSelection<T> {
+  const raw = typeof parameter === "string" ? parameter.trim() : ""
+  const key = raw.toLowerCase()
+  if (list.length === 0) return { mode: "single", accounts: [] }
+  if (!key) return { mode: "single", accounts: [list.find(item => item.id === activeId) ?? list[0]] }
+  if (RUNTIME_ALL_ACCOUNTS_WORDS.includes(key)) {
+    return list.length > 1 ? { mode: "all", accounts: list } : { mode: "single", accounts: [list[0]] }
+  }
+  const names = list.map((item, index) => accountDisplayName(item, index).toLowerCase())
+  const exact = names.indexOf(key)
+  if (exact >= 0) return { mode: "single", accounts: [list[exact]] }
+  if (/^\d+$/.test(key)) {
+    const position = Number(key)
+    if (position >= 1 && position <= list.length) return { mode: "single", accounts: [list[position - 1]] }
+  }
+  if (RUNTIME_INTL_WORDS.includes(key)) {
+    const match = list.find(item => item.site === "intl")
+    if (match) return { mode: "single", accounts: [match] }
+  }
+  if (RUNTIME_CN_WORDS.includes(key)) {
+    const match = list.find(item => item.site !== "intl")
+    if (match) return { mode: "single", accounts: [match] }
+  }
+  const partial = names.findIndex(name => name.includes(key))
+  if (partial >= 0) return { mode: "single", accounts: [list[partial]] }
+  return { mode: "single", accounts: [], unmatched: raw }
+}

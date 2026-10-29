@@ -20,7 +20,7 @@ import {
   Spacer,
   Circle
 } from "scripting"
-import { MediumWidgetView, SmallWidgetView, LargeWidgetView } from "./medium_widget"
+import { MediumWidgetView, SmallWidgetView, LargeWidgetView, MultiAccountWidgetView, AccountWidgetItem } from "./medium_widget"
 import {
   DailyUsagePoint,
   createSnapshot,
@@ -34,7 +34,11 @@ import {
   chinaMonthProgress,
   normalizeEcsStatus,
   usagePercentage,
-  widgetErrorHint
+  widgetErrorHint,
+  accountDisplayName,
+  loadAccountProfiles,
+  scopedStorageKey,
+  selectWidgetAccounts
 } from "./monitor_runtime"
 
 const WIDGET_TRACK = {
@@ -52,6 +56,9 @@ interface AppConfig {
   trafficThresholdGB: number
   vpsCutoffReferenceGB: number
   resetDayOfMonth: number
+  id?: string
+  name?: string
+  site?: string
 }
 
 const STORAGE_KEY = "aliyun_cdt_monitor_config"
@@ -67,29 +74,6 @@ const DEFAULT_CONFIG: AppConfig = {
   trafficThresholdGB: 200,
   vpsCutoffReferenceGB: 195,
   resetDayOfMonth: 1
-}
-
-function loadSavedConfig(): AppConfig {
-  try {
-    if (typeof Storage !== "undefined" && Storage?.get) {
-      const saved = Storage.get(STORAGE_KEY)
-      if (saved) {
-        const parsed = typeof saved === "string" ? JSON.parse(saved) : saved
-        return { ...DEFAULT_CONFIG, ...parsed }
-      }
-    }
-  } catch (e) {
-    console.error("读取本地配置失败:", e)
-  }
-  return { ...DEFAULT_CONFIG }
-}
-
-function isConfigReady(cfg: AppConfig): boolean {
-  return (
-    Boolean(cfg.accessKeyId?.trim()) &&
-    Boolean(cfg.accessKeySecret?.trim()) &&
-    Boolean(cfg.ecsInstanceId?.trim())
-  )
 }
 
 type ECSIpValue = string | string[] | undefined
@@ -310,6 +294,7 @@ interface WidgetData {
   publicIp?: string
   color: string
   isCached?: boolean
+  accountName?: string
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -621,7 +606,7 @@ function AccessoryRectangularView({ data }: { data: WidgetData }) {
           </HStack>
         </HStack>
         <Text font={9} lineLimit={1} foregroundStyle="secondaryLabel">
-          参考余量 {data.remainingGB.toFixed(1)} GB · VPS 线 {data.vpsCutoffReferenceGB} GB
+          {data.accountName ? `${data.accountName} · ` : ""}参考余量 {data.remainingGB.toFixed(1)} GB · VPS 线 {data.vpsCutoffReferenceGB} GB
         </Text>
       </VStack>
     </HStack>
@@ -634,7 +619,7 @@ function AccessoryInlineView({ data }: { data: WidgetData }) {
 
   return (
     <Text lineLimit={1} monospacedDigit>
-      {data.isCached ? "CDT 缓存" : "CDT"} {data.totalGB.toFixed(2)}/{data.thresholdGB}G · {data.vpsCutoffReferenceGB}线余{data.cutoffRemainingGB.toFixed(1)}G · {status.shortLabel}
+      {data.accountName ? `${data.accountName} · ` : ""}{data.isCached ? "CDT 缓存" : "CDT"} {data.totalGB.toFixed(2)}/{data.thresholdGB}G · {data.vpsCutoffReferenceGB}线余{data.cutoffRemainingGB.toFixed(1)}G · {status.shortLabel}
     </Text>
   )
 }
@@ -665,64 +650,192 @@ function presentDataWidget(data: WidgetData): void {
   }
 }
 
+/** 多账号汇总：锁屏行内组件，一行显示所有账号用量 */
+function AccessoryMultiInlineView({ items }: { items: AccountWidgetItem[] }) {
+  return (
+    <Text lineLimit={1} monospacedDigit>
+      {items.map(item => item.data
+        ? `${item.name} ${item.data.totalGB.toFixed(1)}/${item.data.thresholdGB}G`
+        : `${item.name} 失败`).join(" · ")}
+    </Text>
+  )
+}
+
+/** 多账号汇总：锁屏矩形组件，每个账号一行 */
+function AccessoryMultiRectangularView({ items }: { items: AccountWidgetItem[] }) {
+  return (
+    <VStack
+      alignment="leading"
+      spacing={3}
+      widgetBackground="clear"
+      frame={{ maxWidth: Infinity, maxHeight: Infinity, alignment: "leading" }}
+    >
+      {items.slice(0, 3).map((item, index) => {
+        const data = item.data as WidgetData | null
+        const status = data ? getECSStatusMeta(data.ecsStatus) : null
+        return (
+          <HStack key={`${index}-${item.name}`} spacing={4} alignment="center">
+            <Circle widgetAccentable fill={status ? status.color : "systemRed"} frame={{ width: 5, height: 5 }} />
+            <Text font={12} fontWeight="semibold" lineLimit={1}>{item.name}</Text>
+            <Spacer />
+            <Text font={12} monospacedDigit lineLimit={1} foregroundStyle={data ? "label" : "secondaryLabel"}>
+              {data ? `${data.totalGB.toFixed(1)}/${data.thresholdGB}G${data.isCached ? "*" : ""}` : "获取失败"}
+            </Text>
+          </HStack>
+        )
+      })}
+    </VStack>
+  )
+}
+
+function WidgetMessageView({ title, message, color = "systemRed", icon = "exclamationmark.triangle.fill" }: {
+  title: string
+  message: string
+  color?: string
+  icon?: string
+}) {
+  if (Widget.family === "accessoryInline") {
+    return <Text lineLimit={1}>CDT {title}</Text>
+  }
+  return (
+    <VStack
+      alignment="leading"
+      spacing={6}
+      padding={{ horizontal: 14, vertical: 12 }}
+      widgetBackground="systemBackground"
+      frame={{ maxWidth: Infinity, maxHeight: Infinity }}
+    >
+      <HStack spacing={6} alignment="center">
+        <Image systemName={icon} font={13} foregroundStyle={color} />
+        <Text font="caption1" bold foregroundStyle={color} lineLimit={1}>
+          {title}
+        </Text>
+      </HStack>
+      <Text font="caption2" foregroundStyle="secondaryLabel" lineLimit={4}>
+        {message}
+      </Text>
+    </VStack>
+  )
+}
+
 // ==================== 5. 主执行入口 ====================
 
-async function main() {
-  const config = loadSavedConfig()
+function readActiveAccountId(): string | undefined {
   try {
-    // 若未配置，渲染引导提示
-    if (!isConfigReady(config)) {
-      presentWidget(<NotConfiguredWidgetView />)
-      return
-    }
+    const raw = typeof Storage !== "undefined" ? Storage?.get?.(STORAGE_KEY) : undefined
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
+    return typeof parsed?.id === "string" ? parsed.id : undefined
+  } catch {
+    return undefined
+  }
+}
 
-    const data = await fetchWidgetData(config)
-    assertSampleBillingMonth(data.updatedAt)
-    try {
-      if (typeof Storage !== "undefined" && Storage?.get && Storage?.set) {
-        const existing = readSnapshot<WidgetData>(Storage.get(WIDGET_SNAPSHOT_STORAGE_KEY), config)
-        if (!existing || existing.updatedAt.getTime() <= data.updatedAt.getTime()) {
-          Storage.set(WIDGET_SNAPSHOT_STORAGE_KEY, JSON.stringify(createSnapshot(config, data)))
-        }
-      }
-    } catch (error) {
-      console.error("保存小组件快照失败:", error)
+/** 弱网容灾：先读本账号的小组件快照，再读控制台快照；旧版未分账号的键作为兜底。 */
+function loadCachedWidgetData(config: AppConfig): WidgetData | null {
+  try {
+    if (typeof Storage === "undefined" || !Storage?.get) return null
+    const keys = [
+      scopedStorageKey(WIDGET_SNAPSHOT_STORAGE_KEY, config),
+      WIDGET_SNAPSHOT_STORAGE_KEY,
+      scopedStorageKey(DASHBOARD_SNAPSHOT_STORAGE_KEY, config),
+      DASHBOARD_SNAPSHOT_STORAGE_KEY
+    ]
+    for (const key of keys) {
+      const cached = adaptDashboardSnapshotForWidget(readSnapshot(Storage.get(key), config), config)
+      if (cached) return cached
     }
+  } catch {}
+  return null
+}
+
+async function loadAccountWidgetData(config: AppConfig): Promise<WidgetData> {
+  const data = await fetchWidgetData(config)
+  assertSampleBillingMonth(data.updatedAt)
+  try {
+    if (typeof Storage !== "undefined" && Storage?.get && Storage?.set) {
+      const key = scopedStorageKey(WIDGET_SNAPSHOT_STORAGE_KEY, config)
+      const existing = readSnapshot<WidgetData>(Storage.get(key), config)
+      if (!existing || existing.updatedAt.getTime() <= data.updatedAt.getTime()) {
+        Storage.set(key, JSON.stringify(createSnapshot(config, data)))
+      }
+    }
+  } catch (error) {
+    console.error("保存小组件快照失败:", error)
+  }
+  return data
+}
+
+async function presentAllAccounts(accounts: AppConfig[], all: AppConfig[]): Promise<void> {
+  const items: AccountWidgetItem[] = await Promise.all(accounts.map(async config => {
+    const name = accountDisplayName(config, all.indexOf(config))
+    try {
+      return { name, site: config.site, data: await loadAccountWidgetData(config) }
+    } catch (err: any) {
+      console.error(`小组件账号 ${name} 加载失败:`, err)
+      const cached = loadCachedWidgetData(config)
+      return { name, site: config.site, data: cached, error: cached ? undefined : widgetErrorHint(err?.message) }
+    }
+  }))
+  const family = Widget.family
+  if (family === "accessoryInline") {
+    presentWidget(<AccessoryMultiInlineView items={items} />)
+  } else if (family === "accessoryRectangular") {
+    presentWidget(<AccessoryMultiRectangularView items={items} />)
+  } else if (family === "accessoryCircular") {
+    const first = items.find(item => item.data)
+    if (first?.data) presentDataWidget(first.data as WidgetData)
+    else presentWidget(<WidgetMessageView title="获取失败" message={items[0]?.error || "请稍后重试"} />)
+  } else {
+    presentWidget(<MultiAccountWidgetView items={items} family={family} />)
+  }
+}
+
+async function main() {
+  const accounts = loadAccountProfiles<AppConfig>(DEFAULT_CONFIG)
+  if (accounts.length === 0) {
+    presentWidget(<NotConfiguredWidgetView />)
+    return
+  }
+
+  // 长按小组件 → 编辑小组件 → Parameter：留空/国内/国外/账号名/序号/全部
+  const parameter = typeof Widget !== "undefined" ? (Widget as any)?.parameter : undefined
+  const selection = selectWidgetAccounts(accounts, parameter, readActiveAccountId())
+  if (selection.accounts.length === 0) {
+    const names = accounts.map((item, index) => accountDisplayName(item, index)).join("、")
+    presentWidget(
+      <WidgetMessageView
+        title={`未找到账号「${selection.unmatched}」`}
+        message={`编辑小组件的 Parameter 可填：${names}、全部；留空显示 App 当前账号。`}
+        color="systemOrange"
+        icon="person.crop.circle.badge.questionmark"
+      />
+    )
+    return
+  }
+  if (selection.mode === "all") {
+    await presentAllAccounts(selection.accounts, accounts)
+    return
+  }
+
+  const config = selection.accounts[0]
+  const accountName = accounts.length > 1 ? accountDisplayName(config, accounts.indexOf(config)) : undefined
+  try {
+    const data = await loadAccountWidgetData(config)
+    data.accountName = accountName
     presentDataWidget(data)
   } catch (err: any) {
     console.error("小组件加载失败:", err)
-    // 弱网容灾：控制台快照缺少日采样字段，必须校验并适配后才能渲染。
-    try {
-      if (typeof Storage !== "undefined" && Storage?.get) {
-        for (const key of [WIDGET_SNAPSHOT_STORAGE_KEY, DASHBOARD_SNAPSHOT_STORAGE_KEY]) {
-          const snapshot = readSnapshot(Storage.get(key), config)
-          const cached = adaptDashboardSnapshotForWidget(snapshot, config)
-          if (cached) {
-            presentDataWidget(cached)
-            return
-          }
-        }
-      }
-    } catch {}
-
+    const cached = loadCachedWidgetData(config)
+    if (cached) {
+      cached.accountName = accountName
+      presentDataWidget(cached)
+      return
+    }
     presentWidget(
-      <VStack
-        alignment="leading"
-        spacing={6}
-        padding={{ horizontal: 14, vertical: 12 }}
-        widgetBackground="systemBackground"
-        frame={{ maxWidth: Infinity, maxHeight: Infinity }}
-      >
-        <HStack spacing={6} alignment="center">
-          <Image systemName="exclamationmark.triangle.fill" font={13} foregroundStyle="systemRed" />
-          <Text font="caption1" bold foregroundStyle="systemRed">
-            获取失败
-          </Text>
-        </HStack>
-        <Text font="caption2" foregroundStyle="secondaryLabel" lineLimit={3}>
-          {widgetErrorHint(err?.message)}
-        </Text>
-      </VStack>
+      <WidgetMessageView
+        title={accountName ? `${accountName} 获取失败` : "获取失败"}
+        message={widgetErrorHint(err?.message)}
+      />
     )
   }
 }

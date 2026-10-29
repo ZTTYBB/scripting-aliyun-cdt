@@ -24,6 +24,7 @@ interface MediumWidgetData {
   isCached?: boolean
   ecsStatus: string
   color: string
+  accountName?: string
 }
 
 // iOS system fill tones: one neutral surface for every panel, colour only for state.
@@ -185,7 +186,7 @@ function MediumWidgetContent({
       <HStack spacing={5} alignment="center" frame={{ width: layout.contentWidth, height: layout.headerHeight }}>
         <Image systemName="cloud.fill" font={12} widgetAccentable foregroundStyle={MEDIUM_COLORS.blue} />
         <Text font={12} fontWeight="semibold" lineLimit={1} foregroundStyle="label" frame={{ maxWidth: Infinity, alignment: "leading" }}>
-          阿里云 CDT
+          {data.accountName ? `阿里云 CDT · ${data.accountName}` : "阿里云 CDT"}
         </Text>
         <HStack spacing={4} alignment="center">
           <Circle widgetAccentable fill={status.color} frame={{ width: 6, height: 6 }} />
@@ -270,7 +271,7 @@ function WidgetTitleRow({ data, compact = false }: { data: MediumWidgetData; com
     <HStack spacing={5} alignment="center" frame={{ maxWidth: Infinity }}>
       <Image systemName="cloud.fill" font={compact ? 11 : 13} widgetAccentable foregroundStyle={MEDIUM_COLORS.blue} />
       <Text font={compact ? 11 : 13} fontWeight="semibold" lineLimit={1} foregroundStyle="label">
-        {compact ? "CDT" : "阿里云 CDT"}
+        {compact ? (data.accountName || "CDT") : (data.accountName ? `阿里云 CDT · ${data.accountName}` : "阿里云 CDT")}
       </Text>
       <Spacer />
       <HStack spacing={4} alignment="center">
@@ -456,6 +457,144 @@ export function LargeWidgetView({ data }: { data: SystemWidgetData }) {
           <ZStack alignment="topLeading" frame={{ width, height }}>
             <LargeWidgetContent data={data} width={width} height={height} />
           </ZStack>
+        )
+      }}
+    </GeometryReader>
+  )
+}
+
+// ==================== Multi-account summary: one panel per account ====================
+
+export interface AccountWidgetItem {
+  name: string
+  site?: string
+  data: MediumWidgetData | null
+  error?: string
+}
+
+function accountSiteTag(site?: string): string {
+  return site === "intl" ? "国际站" : "中国站"
+}
+
+function latestUpdateLabel(items: AccountWidgetItem[]): string {
+  let latest = 0
+  let cached = false
+  for (const item of items) {
+    if (!item.data) continue
+    const date = item.data.updatedAt instanceof Date ? item.data.updatedAt : new Date(item.data.updatedAt)
+    if (Number.isFinite(date.getTime()) && date.getTime() > latest) latest = date.getTime()
+    if (item.data.isCached) cached = true
+  }
+  return latest > 0 ? `${cached ? "含缓存 · " : ""}${mediumUpdateTime(new Date(latest))}` : "--:--"
+}
+
+function AccountPanel({
+  item, width, height, compact
+}: { item: AccountWidgetItem; width: number; height: number; compact: boolean }) {
+  const inset = compact ? 6 : 10
+  const roomy = !compact && height >= 110
+  const innerWidth = Math.max(40, width - inset * 2)
+  const innerHeight = Math.max(24, height - inset * 2)
+  const data = item.data
+  const status = mediumStatus(data?.ecsStatus ?? "Unknown")
+  return (
+    <ZStack alignment="center" frame={{ width, height }}>
+      <RoundedRectangle cornerRadius={compact ? 10 : 12} style="continuous" fill={MEDIUM_COLORS.neutralPanel} frame={{ width, height }} />
+      <VStack alignment="leading" spacing={0} frame={{ width: innerWidth, height: innerHeight, alignment: "topLeading" }}>
+        <HStack spacing={4} alignment="center" frame={{ width: innerWidth }}>
+          <Circle widgetAccentable fill={data ? status.color : "systemRed"} frame={{ width: 6, height: 6 }} />
+          <Text font={compact ? 11 : 12} fontWeight="semibold" lineLimit={1} minScaleFactor={0.8} foregroundStyle="label">
+            {item.name}
+          </Text>
+          <Spacer />
+          <Text font={9} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+            {!data ? accountSiteTag(item.site) : compact ? `${data.percentage.toFixed(0)}%` : `${status.label}${data.isCached ? " · 缓存" : ""}`}
+          </Text>
+        </HStack>
+        <Spacer />
+        {data ? (
+          <VStack alignment="leading" spacing={compact ? 3 : 4}>
+            <HStack alignment="lastTextBaseline" spacing={2}>
+              <Text font={compact ? 17 : 20} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.6} foregroundStyle="label">
+                {data.totalGB.toFixed(2)}
+              </Text>
+              <Text font={compact ? 9 : 10} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+                / {data.thresholdGB} GB
+              </Text>
+            </HStack>
+            <UsageBar data={data} width={innerWidth} height={compact ? 4 : 5} />
+            {!compact && <HStack spacing={2} alignment="center" frame={{ width: innerWidth }}>
+              <Text font={9} monospacedDigit lineLimit={1} minScaleFactor={0.8} foregroundStyle="secondaryLabel" frame={{ maxWidth: Infinity, alignment: "leading" }}>
+                余 {data.remainingGB.toFixed(1)} GB
+              </Text>
+              <Text font={9} fontWeight="semibold" monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+                {data.percentage.toFixed(1)}%
+              </Text>
+            </HStack>}
+            {roomy && (
+              <Text font={9} monospacedDigit lineLimit={1} minScaleFactor={0.8} foregroundStyle="tertiaryLabel">
+                日均可用 {data.dailyBudgetGB} GB · 近 7 日 {formatDailyUsage(data.sevenDayTotalGB)} GB
+              </Text>
+            )}
+          </VStack>
+        ) : (
+          <VStack alignment="leading" spacing={2}>
+            <Text font={compact ? 12 : 13} fontWeight="semibold" foregroundStyle="systemRed" lineLimit={1}>获取失败</Text>
+            <Text font={9} foregroundStyle="secondaryLabel" lineLimit={2} minScaleFactor={0.8}>
+              {item.error || "请在 App 内检查该账号配置"}
+            </Text>
+          </VStack>
+        )}
+      </VStack>
+    </ZStack>
+  )
+}
+
+function MultiAccountHeader({ items, width, compact }: { items: AccountWidgetItem[]; width: number; compact: boolean }) {
+  const days = items.find(item => item.data)?.data?.daysRemaining
+  return (
+    <HStack spacing={5} alignment="center" frame={{ width }}>
+      <Image systemName="cloud.fill" font={compact ? 11 : 12} widgetAccentable foregroundStyle={MEDIUM_COLORS.blue} />
+      <Text font={compact ? 11 : 12} fontWeight="semibold" lineLimit={1} foregroundStyle="label">
+        {compact ? "CDT" : "阿里云 CDT"}
+      </Text>
+      <Spacer />
+      <Text font={compact ? 9 : 10} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+        {compact || days === undefined ? latestUpdateLabel(items) : `距结算 ${days} 天 · ${latestUpdateLabel(items)}`}
+      </Text>
+    </HStack>
+  )
+}
+
+export function MultiAccountWidgetView({ items, family }: { items: AccountWidgetItem[]; family?: string }) {
+  return (
+    <GeometryReader widgetBackground="systemBackground">
+      {proxy => {
+        const display = Widget.displaySize
+        const fallbackWidth = display?.width > 0 ? display.width - 32 : 297
+        const fallbackHeight = display?.height > 0 ? display.height - 32 : 123
+        const width = Number.isFinite(proxy?.size?.width) && proxy.size.width > 80 ? Math.floor(proxy.size.width) : fallbackWidth
+        const height = Number.isFinite(proxy?.size?.height) && proxy.size.height > 60 ? Math.floor(proxy.size.height) : fallbackHeight
+        const compact = family === "systemSmall" || width < 200
+        const gap = compact ? 6 : 8
+        const headerHeight = compact ? 16 : 18
+        const visible = items.slice(0, compact ? 2 : family === "systemLarge" ? 4 : 2)
+        const count = Math.max(1, visible.length)
+        // 中号两账号左右并排；小号和大号上下排列。
+        const sideBySide = !compact && family !== "systemLarge" && count <= 2
+        const bodyHeight = height - headerHeight - gap
+        const panelWidth = sideBySide ? (width - gap * (count - 1)) / count : width
+        const panelHeight = sideBySide ? bodyHeight : (bodyHeight - gap * (count - 1)) / count
+        const panels = visible.map((item, index) => (
+          <AccountPanel key={`${index}-${item.name}`} item={item} width={panelWidth} height={panelHeight} compact={compact} />
+        ))
+        return (
+          <VStack alignment="leading" spacing={gap} frame={{ width, height, alignment: "topLeading" }}>
+            <MultiAccountHeader items={items} width={width} compact={compact} />
+            {sideBySide
+              ? <HStack spacing={gap} alignment="top">{panels}</HStack>
+              : <VStack spacing={gap} alignment="leading">{panels}</VStack>}
+          </VStack>
         )
       }}
     </GeometryReader>

@@ -42,7 +42,16 @@ import {
   readSnapshot,
   recordTrafficSample,
   usagePercentage,
-  withRequestTimeout
+  withRequestTimeout,
+  accountDisplayName,
+  bssEndpoint,
+  loadAccountProfiles,
+  newAccountId,
+  removeAccountProfile,
+  saveAccountProfiles,
+  scopedStorageKey,
+  siteLabel,
+  upsertAccountProfile
 } from "./monitor_runtime"
 import { isBillQueryAvailable, queryAccountBillPages, recentBillingDates } from "./bill_queries"
 
@@ -58,6 +67,10 @@ interface AppConfig {
   trafficThresholdGB: number
   vpsCutoffReferenceGB: number
   resetDayOfMonth: number
+  /** 多账号：本机账号标识、显示名称、站点（cn=中国站，intl=国际站） */
+  id?: string
+  name?: string
+  site?: string
 }
 
 const STORAGE_KEY = "aliyun_cdt_monitor_config"
@@ -78,7 +91,11 @@ function loadSavedConfig(): AppConfig {
       const saved = Storage.get(STORAGE_KEY)
       if (saved) {
         const parsed = typeof saved === "string" ? JSON.parse(saved) : saved
-        return { ...DEFAULT_CONFIG, ...parsed }
+        const cfg: AppConfig = { ...DEFAULT_CONFIG, ...parsed }
+        // 旧版单账号配置没有 id，与 loadAccountProfiles 的迁移规则保持一致。
+        if (!cfg.id) cfg.id = "default"
+        cfg.site = cfg.site === "intl" ? "intl" : "cn"
+        return cfg
       }
     }
   } catch (e) {
@@ -90,6 +107,8 @@ function loadSavedConfig(): AppConfig {
 function saveConfigToStorage(cfg: AppConfig): void {
   try {
     if (typeof Storage !== "undefined" && Storage?.set) {
+      // 先读出旧列表（含尚未迁移的旧版单账号），再写入当前账号，避免添加新账号时丢掉旧账号。
+      if (cfg.id) saveAccountProfiles(upsertAccountProfile(loadAccountProfiles<AppConfig>(DEFAULT_CONFIG), cfg))
       Storage.set(STORAGE_KEY, JSON.stringify(cfg))
     }
   } catch (e) {
@@ -347,7 +366,7 @@ async function queryBillItemsForCycle(
     }
     Success?: boolean
     Code?: string
-  }>("business.aliyuncs.com", "QueryBillOverview", "2017-12-14", config, {
+  }>(bssEndpoint(config), "QueryBillOverview", "2017-12-14", config, {
     BillingCycle: billingCycle
   }).catch(() => null)
 
@@ -356,7 +375,7 @@ async function queryBillItemsForCycle(
   }
 
   return queryAccountBillPages(
-    params => aliyunRequest("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, params),
+    params => aliyunRequest(bssEndpoint(config), "QueryAccountBill", "2017-12-14", config, params),
     { BillingCycle: billingCycle, IsGroupByProduct: true }
   )
 }
@@ -642,7 +661,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
       CreditAmount?: string
       Currency?: string
     }
-  }>("business.aliyuncs.com", "QueryAccountBalance", "2017-12-14", config).catch(() => null)
+  }>(bssEndpoint(config), "QueryAccountBalance", "2017-12-14", config).catch(() => null)
 
   const cycleTask = (billingCycle: string) => queryBillItemsForCycle(config, billingCycle).catch(() => null)
   const currentTask = cycleTask(cycle)
@@ -663,7 +682,7 @@ async function fetchConsoleData(config: AppConfig): Promise<ConsoleData> {
     return Promise.all(dateQueries.map(async q => {
       try {
         const dayResult = await queryAccountBillPages(
-          params => aliyunRequest("business.aliyuncs.com", "QueryAccountBill", "2017-12-14", config, params),
+          params => aliyunRequest(bssEndpoint(config), "QueryAccountBill", "2017-12-14", config, params),
           {
             BillingCycle: q.billingCycle,
             Granularity: "DAILY",
@@ -1093,11 +1112,15 @@ function SettingsNotice({ kind, text }: { kind: "error" | "success"; text: strin
 function SettingsView({
   currentConfig,
   onSave,
-  onCancel
+  onCancel,
+  onDelete,
+  cancelable
 }: {
   currentConfig: AppConfig
   onSave: (newConfig: AppConfig) => void
   onCancel: () => void
+  onDelete?: (id: string) => void
+  cancelable?: boolean
 }) {
   const [ak, setAk] = useState(currentConfig.accessKeyId || "")
   const [sk, setSk] = useState(currentConfig.accessKeySecret || "")
@@ -1109,6 +1132,8 @@ function SettingsView({
   )
   const [errorNotice, setErrorNotice] = useState<string | null>(null)
   const [successNotice, setSuccessNotice] = useState<string | null>(null)
+  const [accountName, setAccountName] = useState(currentConfig.name || "")
+  const [site, setSite] = useState(currentConfig.site === "intl" ? "intl" : "cn")
 
   // 智能剪贴板识别与导入
   const handleSmartPaste = async () => {
@@ -1252,6 +1277,39 @@ function SettingsView({
     }
   }
 
+  const handleSelectSite = async () => {
+    if (typeof Dialog === "undefined" || !Dialog.actionSheet) {
+      setSite(site === "intl" ? "cn" : "intl")
+      return
+    }
+    const idx = await Dialog.actionSheet({
+      title: "账号所属站点",
+      message: "国际站账号的账单接口走新加坡入口，选错会导致余额和账单查询失败。",
+      cancelButton: true,
+      actions: [
+        { label: `中国站 aliyun.com${site === "cn" ? " ✓" : ""}` },
+        { label: `国际站 alibabacloud.com${site === "intl" ? " ✓" : ""}` }
+      ]
+    })
+    if (idx === 0) setSite("cn")
+    else if (idx === 1) setSite("intl")
+  }
+
+  const handleDelete = async () => {
+    if (!onDelete || !currentConfig.id) return
+    const label = accountDisplayName({ name: accountName, site })
+    let confirmed = true
+    if (typeof Dialog !== "undefined" && Dialog.confirm) {
+      confirmed = await Dialog.confirm({
+        title: `删除账号「${label}」？`,
+        message: "只删除本机保存的凭据和设置，不影响阿里云账号本身。",
+        cancelLabel: "取消",
+        confirmLabel: "删除"
+      } as any)
+    }
+    if (confirmed) onDelete(currentConfig.id)
+  }
+
   const handleSave = () => {
     if (!ak.trim() || !sk.trim() || !ecsId.trim()) {
       setErrorNotice("请填写完整的 AccessKey ID、Secret 与 ECS 实例 ID！")
@@ -1274,7 +1332,10 @@ function SettingsView({
       ecsInstanceId: ecsId.trim(),
       trafficThresholdGB: numThreshold,
       vpsCutoffReferenceGB: numCutoffReference,
-      resetDayOfMonth: 1
+      resetDayOfMonth: 1,
+      id: currentConfig.id || newAccountId(),
+      name: accountName.trim(),
+      site
     }
     saveConfigToStorage(newCfg)
     onSave(newCfg)
@@ -1343,6 +1404,34 @@ function SettingsView({
       action={() => promptField("VPS 熔断参考线 (GB)", "按 VPS 脚本阈值手动填写；此值只用于手机告警，不会同步或关机", cutoffReference, cutoffReference, setCutoffReference)}
     />
   )
+  const nameRow = (
+    <SettingsRow
+      icon="person.crop.circle.fill"
+      iconColor="systemBlue"
+      title="账号名称"
+      detail={accountName || accountDisplayName({ site })}
+      detailColor={accountName ? "secondaryLabel" : "tertiaryLabel"}
+      accessibilityLabel="设置账号名称"
+      action={() => promptField("账号名称", "用于切换账号和小组件 Parameter，例如：国内、国外", accountName, site === "intl" ? "国外" : "国内", setAccountName)}
+    />
+  )
+  const siteRow = (
+    <SettingsRow
+      icon="building.columns.fill"
+      iconColor="systemTeal"
+      title="站点"
+      detail={siteLabel(site)}
+      accessibilityLabel="设置账号站点"
+      action={handleSelectSite}
+    />
+  )
+  const deleteRow = onDelete && currentConfig.id ? (
+    <Button action={handleDelete} buttonStyle="plain" accessibilityLabel="删除此账号" frame={{ maxWidth: Infinity }}>
+      <Text font="body" foregroundStyle="systemRed" padding={{ vertical: 2 }} frame={{ maxWidth: Infinity, alignment: "center" }}>
+        删除此账号
+      </Text>
+    </Button>
+  ) : null
   const pasteRow = (
     <Button action={handleSmartPaste} buttonStyle="plain" accessibilityLabel="一键识别剪贴板" frame={{ maxWidth: Infinity }}>
       <HStack alignment="center" spacing={12} padding={{ vertical: 2 }} frame={{ maxWidth: Infinity }}>
@@ -1368,7 +1457,7 @@ function SettingsView({
   )
   const footnote = (text: string) => <Text font="footnote" foregroundStyle="secondaryLabel">{text}</Text>
   const toolbar = {
-    topBarLeading: isConfigReady(currentConfig)
+    topBarLeading: cancelable ?? isConfigReady(currentConfig)
       ? [
           <Button key="settings-back" action={onCancel} accessibilityLabel="返回">
             <Image systemName="chevron.backward" foregroundStyle="label" />
@@ -1402,6 +1491,14 @@ function SettingsView({
           </Section>
         )}
 
+        <Section
+          header={<Text>账号</Text>}
+          footer={footnote("名称会显示在切换菜单和小组件上。编辑小组件时在 Parameter 填名称可固定显示该账号，填「全部」显示所有账号。")}
+        >
+          {nameRow}
+          {siteRow}
+        </Section>
+
         <Section footer={footnote("复制包含阿里云凭据的文本后轻点，自动填入可识别的 AK、SK、实例 ID 与地域。")}>
           {pasteRow}
         </Section>
@@ -1430,6 +1527,8 @@ function SettingsView({
           {cutoffRow}
         </Section>
 
+        {deleteRow && <Section>{deleteRow}</Section>}
+
         <Section footer={versionFooter}>
           {saveRow}
         </Section>
@@ -1452,6 +1551,14 @@ function SettingsView({
             {successNotice && <SettingsCardRow><SettingsNotice kind="success" text={successNotice} /></SettingsCardRow>}
           </SettingsCard>
         )}
+
+        <DashboardSectionHeader title="账号" />
+        <SettingsCard>
+          <SettingsCardRow>{nameRow}</SettingsCardRow>
+          <Divider padding={{ leading: 57 }} />
+          <SettingsCardRow>{siteRow}</SettingsCardRow>
+        </SettingsCard>
+        <SectionFootnote>编辑小组件时在 Parameter 填账号名称可固定显示该账号，填「全部」显示所有账号。</SectionFootnote>
 
         <SettingsCard>
           <SettingsCardRow>{pasteRow}</SettingsCardRow>
@@ -1482,7 +1589,12 @@ function SettingsView({
         </SettingsCard>
         <SectionFootnote>参考线仅用于本机展示和提醒，不代表阿里云账号完整免费额度，也不会控制 ECS。VPS 独立负责保活与熔断。</SectionFootnote>
 
-        <VStack padding={{ top: 20 }}>
+        <VStack padding={{ top: 20 }} spacing={16}>
+          {deleteRow && (
+            <SettingsCard>
+              <SettingsCardRow>{deleteRow}</SettingsCardRow>
+            </SettingsCard>
+          )}
           <SettingsCard>
             <SettingsCardRow>{saveRow}</SettingsCardRow>
           </SettingsCard>
@@ -1498,7 +1610,9 @@ function SettingsView({
 function getCachedConsoleSnapshot(config: AppConfig): { data: ConsoleData | null; lastUpdated: Date | null } {
   try {
     if (typeof Storage !== "undefined" && Storage?.get) {
-      const raw = Storage.get(SNAPSHOT_STORAGE_KEY)
+      // 先读本账号快照；旧版未分账号的键仍可兜底，readSnapshot 会校验账号指纹。
+      const scoped = Storage.get(scopedStorageKey(SNAPSHOT_STORAGE_KEY, config))
+      const raw = readSnapshot(scoped, config) ? scoped : Storage.get(SNAPSHOT_STORAGE_KEY)
       if (raw) {
         const parsed = readSnapshot<ConsoleData>(raw, config)
         if (!parsed) return { data: null, lastUpdated: null }
@@ -1580,6 +1694,8 @@ function ConsoleView() {
     }
   })
   const [isCopied, setIsCopied] = useState(false)
+  const [accounts, setAccounts] = useState<AppConfig[]>(() => loadAccountProfiles<AppConfig>(DEFAULT_CONFIG))
+  const [editingNew, setEditingNew] = useState<AppConfig | null>(null)
 
   const appendLog = (msg: string, financial: boolean = false) => {
     const time = new Date().toLocaleTimeString()
@@ -1785,6 +1901,7 @@ function ConsoleView() {
         setLastUpdated(sampledAt)
         try {
           if (typeof Storage !== "undefined" && Storage?.set) {
+Storage.set(scopedStorageKey(SNAPSHOT_STORAGE_KEY, cfg), JSON.stringify(createSnapshot(cfg, res)))
             Storage.set(SNAPSHOT_STORAGE_KEY, JSON.stringify(createSnapshot(cfg, res)))
           }
         } catch {}
@@ -1816,14 +1933,87 @@ function ConsoleView() {
   }, [])
 
   // 1. 如果正在打开设置页
+  const switchAccount = (next: AppConfig) => {
+    refreshGate.invalidate()
+    try {
+      if (typeof Storage !== "undefined" && Storage?.set) Storage.set(STORAGE_KEY, JSON.stringify(next))
+    } catch {}
+    const cached = getCachedConsoleSnapshot(next)
+    setEditingNew(null)
+    setConfig(next)
+    setData(cached.data)
+    setLastUpdated(cached.lastUpdated)
+    setErrorMessage(null)
+    setLogs([])
+    setIsCopied(false)
+    setShowSettings(false)
+    loadData(next)
+  }
+
+  const deleteAccount = (id: string) => {
+    const remaining = removeAccountProfile(loadAccountProfiles<AppConfig>(DEFAULT_CONFIG), id)
+    saveAccountProfiles(remaining)
+    setAccounts(remaining)
+    if (remaining.length > 0) {
+      switchAccount(remaining[0])
+      return
+    }
+    refreshGate.invalidate()
+    try {
+      if (typeof Storage !== "undefined" && Storage?.set) Storage.set(STORAGE_KEY, "")
+    } catch {}
+    setConfig({ ...DEFAULT_CONFIG })
+    setData(null)
+    setLastUpdated(null)
+    setErrorMessage(null)
+    setLogs([])
+    setEditingNew(null)
+    setShowSettings(true)
+  }
+
+  const startAddAccount = () => {
+    setEditingNew({ ...DEFAULT_CONFIG, id: newAccountId(), site: accounts.some(item => item.site === "intl") ? "cn" : "intl" })
+    setShowSettings(true)
+  }
+
+  // 账号切换：列出已保存账号，末尾提供「添加账号」。
+  const handleSwitchAccount = async () => {
+    const list = loadAccountProfiles<AppConfig>(DEFAULT_CONFIG)
+    setAccounts(list)
+    if (typeof Dialog === "undefined" || !Dialog.actionSheet) {
+      startAddAccount()
+      return
+    }
+    const actions = list.map((item, index) => ({
+      label: `${accountDisplayName(item, index)} · ${siteLabel(item.site)}${item.id === config.id ? " ✓" : ""}`
+    }))
+    actions.push({ label: "添加账号…" })
+    const idx = await Dialog.actionSheet({
+      title: "切换阿里云账号",
+      message: "小组件可在「编辑小组件 → Parameter」填账号名称固定显示，填「全部」同时显示所有账号。",
+      cancelButton: true,
+      actions
+    })
+    if (idx === null || idx === undefined || idx < 0) return
+    if (idx === list.length) {
+      startAddAccount()
+    } else if (list[idx] && list[idx].id !== config.id) {
+      switchAccount(list[idx])
+    }
+  }
+
   if (showSettings) {
     return (
       <NavigationStack>
         <SettingsView
-          currentConfig={config}
+          key={(editingNew || config).id || "default"}
+          currentConfig={editingNew || config}
+          cancelable={editingNew ? isConfigReady(config) : undefined}
           onSave={newCfg => {
             refreshGate.invalidate()
             const cached = getCachedConsoleSnapshot(newCfg)
+            setAccounts(loadAccountProfiles<AppConfig>(DEFAULT_CONFIG))
+            setEditingNew(null)
             setConfig(newCfg)
             setData(cached.data)
             setLastUpdated(cached.lastUpdated)
@@ -1833,7 +2023,11 @@ function ConsoleView() {
             setShowSettings(false)
             loadData(newCfg)
           }}
-          onCancel={() => setShowSettings(false)}
+          onDelete={editingNew || accounts.length === 0 ? undefined : deleteAccount}
+          onCancel={() => {
+            setEditingNew(null)
+            setShowSettings(!isConfigReady(config))
+          }}
         />
       </NavigationStack>
     )
@@ -1895,12 +2089,19 @@ function ConsoleView() {
     <NavigationStack>
       <ZStack
         frame={{ maxWidth: Infinity, maxHeight: Infinity }}
-        navigationTitle="阿里云 CDT"
+        navigationTitle={accounts.length > 1
+          ? accountDisplayName(config, Math.max(0, accounts.findIndex(item => item.id === config.id)))
+          : "阿里云 CDT"}
         navigationBarTitleDisplayMode="large"
         toolbarBackground="clear"
         toolbarBackgroundVisibility={{ visibility: "hidden", bars: ["navigationBar"] }}
         scrollEdgeEffectStyle={{ style: "soft", edges: "top" }}
         toolbar={{
+          topBarLeading: [
+            <Button key="dashboard-accounts" action={handleSwitchAccount} accessibilityLabel="切换账号">
+              <Image systemName={accounts.length > 1 ? "person.2" : "person.crop.circle.badge.plus"} foregroundStyle="label" />
+            </Button>,
+          ],
           topBarTrailing: [
             <Button
               key="dashboard-refresh"
