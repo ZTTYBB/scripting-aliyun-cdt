@@ -1134,6 +1134,8 @@ function SettingsView({
   const [successNotice, setSuccessNotice] = useState<string | null>(null)
   const [accountName, setAccountName] = useState(currentConfig.name || "")
   const [site, setSite] = useState(currentConfig.site === "intl" ? "intl" : "cn")
+  const [accountId, setAccountId] = useState(currentConfig.id || "")
+  const [siteDrafts, setSiteDrafts] = useState<Record<string, any>>({})
 
   // 智能剪贴板识别与导入
   const handleSmartPaste = async () => {
@@ -1277,9 +1279,56 @@ function SettingsView({
     }
   }
 
+  // 切换站点 = 切换到另一个账号：当前表单存为草稿，载入目标站点已保存（或之前输入）的内容，
+  // 目标站点还没有账号时清空，让用户重新输入；切回来时原内容原样还原。
+  const applySite = (next: string) => {
+    if (next === site) return
+    const drafts = {
+      ...siteDrafts,
+      [site]: { ak, sk, region, ecsId, threshold, cutoffReference, accountName, accountId }
+    }
+    setSiteDrafts(drafts)
+    let target = drafts[next]
+    if (!target) {
+      const saved = loadAccountProfiles<AppConfig>(DEFAULT_CONFIG).find(item => (item.site === "intl" ? "intl" : "cn") === next)
+      target = saved
+        ? {
+            ak: saved.accessKeyId || "",
+            sk: saved.accessKeySecret || "",
+            region: saved.regionId || "cn-hongkong",
+            ecsId: saved.ecsInstanceId || "",
+            threshold: String(saved.trafficThresholdGB || DEFAULT_CONFIG.trafficThresholdGB),
+            cutoffReference: String(saved.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB),
+            accountName: saved.name || "",
+            accountId: saved.id || ""
+          }
+        : {
+            ak: "",
+            sk: "",
+            region: DEFAULT_CONFIG.regionId,
+            ecsId: "",
+            threshold: String(DEFAULT_CONFIG.trafficThresholdGB),
+            cutoffReference: String(DEFAULT_CONFIG.vpsCutoffReferenceGB),
+            accountName: "",
+            accountId: ""
+          }
+    }
+    setAk(target.ak)
+    setSk(target.sk)
+    setRegion(target.region)
+    setEcsId(target.ecsId)
+    setThreshold(target.threshold)
+    setCutoffReference(target.cutoffReference)
+    setAccountName(target.accountName)
+    setAccountId(target.accountId)
+    setSite(next)
+    setErrorNotice(null)
+    setSuccessNotice(null)
+  }
+
   const handleSelectSite = async () => {
     if (typeof Dialog === "undefined" || !Dialog.actionSheet) {
-      setSite(site === "intl" ? "cn" : "intl")
+      applySite(site === "intl" ? "cn" : "intl")
       return
     }
     const idx = await Dialog.actionSheet({
@@ -1291,12 +1340,12 @@ function SettingsView({
         { label: `国际站 alibabacloud.com${site === "intl" ? " ✓" : ""}` }
       ]
     })
-    if (idx === 0) setSite("cn")
-    else if (idx === 1) setSite("intl")
+    if (idx === 0) applySite("cn")
+    else if (idx === 1) applySite("intl")
   }
 
   const handleDelete = async () => {
-    if (!onDelete || !currentConfig.id) return
+    if (!onDelete || !accountId) return
     const label = accountDisplayName({ name: accountName, site })
     let confirmed = true
     if (typeof Dialog !== "undefined" && Dialog.confirm) {
@@ -1307,7 +1356,7 @@ function SettingsView({
         confirmLabel: "删除"
       } as any)
     }
-    if (confirmed) onDelete(currentConfig.id)
+    if (confirmed) onDelete(accountId)
   }
 
   const handleSave = () => {
@@ -1333,7 +1382,7 @@ function SettingsView({
       trafficThresholdGB: numThreshold,
       vpsCutoffReferenceGB: numCutoffReference,
       resetDayOfMonth: 1,
-      id: currentConfig.id || newAccountId(),
+      id: accountId || newAccountId(),
       name: accountName.trim(),
       site
     }
@@ -1425,7 +1474,7 @@ function SettingsView({
       action={handleSelectSite}
     />
   )
-  const deleteRow = onDelete && currentConfig.id ? (
+  const deleteRow = onDelete && accountId && loadAccountProfiles<AppConfig>(DEFAULT_CONFIG).some(item => item.id === accountId) ? (
     <Button action={handleDelete} buttonStyle="plain" accessibilityLabel="删除此账号" frame={{ maxWidth: Infinity }}>
       <Text font="body" foregroundStyle="systemRed" padding={{ vertical: 2 }} frame={{ maxWidth: Infinity, alignment: "center" }}>
         删除此账号

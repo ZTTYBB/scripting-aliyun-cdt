@@ -352,9 +352,9 @@ function DailyUsageBars({ data, width, chartHeight }: { data: SystemWidgetData; 
   const columnWidth = width / 7
   const barWidth = Math.min(22, Math.max(10, columnWidth - 14))
   return (
-    <ZStack frame={{ width, height: chartHeight + 36 }}>
-      <RoundedRectangle cornerRadius={8} style="continuous" fill={MEDIUM_COLORS.neutralPanel} frame={{ width, height: chartHeight + 36 }} />
-      <HStack spacing={0} alignment="bottom" frame={{ width, height: chartHeight + 36 }}>
+    <ZStack frame={{ width, height: chartHeight + 44 }}>
+      <RoundedRectangle cornerRadius={8} style="continuous" fill={MEDIUM_COLORS.neutralPanel} frame={{ width, height: chartHeight + 44 }} />
+      <HStack spacing={0} alignment="bottom" frame={{ width, height: chartHeight + 44 }}>
         {points.map(point => {
           const value = point.valueGB
           const fillHeight = value === null || value <= 0 ? 0 : Math.max(4, Math.round((value / maximum) * chartHeight))
@@ -391,26 +391,32 @@ function DailyUsageBars({ data, width, chartHeight }: { data: SystemWidgetData; 
 function LargeWidgetContent({ data, width, height }: { data: SystemWidgetData; width: number; height: number }) {
   const gap = 10
   const tileWidth = (width - gap) / 2
-  const chartHeight = Math.max(48, Math.min(96, height - 236))
+  // 每个区块都用固定高度，图表高度吃掉剩余空间，区块间距按余量自适应，
+  // 这样无论机型的大号组件有多高，内容总高度都不会超出可用高度。
+  const fixedHeight = 216
+  const free = height - 4 - fixedHeight
+  const chartHeight = Math.max(28, Math.min(96, Math.floor(free - 40)))
+  const sectionGap = Math.max(4, Math.min(14, Math.floor((free - chartHeight) / 5)))
   return (
-    <VStack alignment="leading" spacing={0} frame={{ width, height, alignment: "topLeading" }}>
-      <WidgetTitleRow data={data} />
-      <Spacer />
-      <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>本月出网</Text>
-      <HStack alignment="lastTextBaseline" spacing={3} frame={{ width }}>
-        <Text font={34} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.6} foregroundStyle="label">
-          {data.totalGB.toFixed(2)}
-        </Text>
-        <Text font={14} fontWeight="semibold" foregroundStyle="secondaryLabel">GB</Text>
-        <Spacer />
-        <Text font={12} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
-          {data.percentage.toFixed(1)}% · 共 {data.thresholdGB} GB
-        </Text>
-      </HStack>
-      <Spacer />
+    <VStack alignment="leading" spacing={sectionGap} frame={{ width, height, alignment: "topLeading" }}>
+      <VStack alignment="leading" spacing={0} frame={{ width, height: 16, alignment: "leading" }}>
+        <WidgetTitleRow data={data} />
+      </VStack>
+      <VStack alignment="leading" spacing={0} frame={{ width, height: 56, alignment: "topLeading" }}>
+        <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>本月出网</Text>
+        <HStack alignment="lastTextBaseline" spacing={3} frame={{ width }}>
+          <Text font={34} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.6} foregroundStyle="label">
+            {data.totalGB.toFixed(2)}
+          </Text>
+          <Text font={14} fontWeight="semibold" foregroundStyle="secondaryLabel">GB</Text>
+          <Spacer />
+          <Text font={12} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+            {data.percentage.toFixed(1)}% · 共 {data.thresholdGB} GB
+          </Text>
+        </HStack>
+      </VStack>
       <UsageBar data={data} width={width} height={6} />
-      <Spacer />
-      <VStack spacing={8} alignment="leading">
+      <VStack spacing={8} alignment="leading" frame={{ width, height: 80, alignment: "topLeading" }}>
         <HStack spacing={gap} alignment="top">
           <LargeMetric label="参考余量" value={data.remainingGB.toFixed(2)} unit="GB" width={tileWidth} />
           <LargeMetric label="日均可用" value={data.dailyBudgetGB} unit="GB" width={tileWidth} />
@@ -420,8 +426,7 @@ function LargeWidgetContent({ data, width, height }: { data: SystemWidgetData; w
           <LargeMetric label="近 7 日" value={formatDailyUsage(data.sevenDayTotalGB)} unit="GB" width={tileWidth} />
         </HStack>
       </VStack>
-      <Spacer />
-      <HStack alignment="center" frame={{ width }} padding={{ bottom: 5 }}>
+      <HStack alignment="center" frame={{ width, height: 14 }}>
         <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>每日用量</Text>
         <Spacer />
         <Text font={10} foregroundStyle="tertiaryLabel" lineLimit={1}>本机采样估算 · GB</Text>
@@ -433,7 +438,7 @@ function LargeWidgetContent({ data, width, height }: { data: SystemWidgetData; w
 
 function LargeMetric({ label, value, unit, width }: { label: string; value: string; unit: string; width: number }) {
   return (
-    <VStack alignment="leading" spacing={1} frame={{ width, alignment: "topLeading" }}>
+    <VStack alignment="leading" spacing={1} frame={{ width, height: 36, alignment: "topLeading" }}>
       <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>{label}</Text>
       <HStack alignment="lastTextBaseline" spacing={2}>
         <Text font={17} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.75} foregroundStyle="label">

@@ -121,7 +121,7 @@ vm.runInNewContext(transpile(readFileSync(sourcePath, "utf8")), {
   Date
 }, { filename: sourcePath })
 
-const { planMediumWidgetLayout, formatDailyUsage, MediumWidgetView } = module.exports
+const { planMediumWidgetLayout, formatDailyUsage, MediumWidgetView, LargeWidgetView } = module.exports
 
 function descendants(node) {
   if (!node || typeof node !== "object") return []
@@ -409,3 +409,23 @@ test("the daily strip keeps an adaptive grouped panel while key figures stay vis
     assert.ok(textLabels(tree).some(text => text.includes(label)), `${label} must remain visible.`)
   }
 })
+
+// Large widget: every host height must fit all sections, including the daily chart labels.
+for (const hostHeight of [273, 293, 313, 340, 366]) {
+  test(`large widget content fits a ${hostHeight}pt measured height`, () => {
+    scriptingValues.Widget.displaySize = { width: 329, height: hostHeight + 32 }
+    scriptingValues.measuredSize = { width: 297, height: hostHeight }
+    const tree = LargeWidgetView({ data: fixtureData() })
+    const stack = descendants(tree).find(node => node.type === "VStack"
+      && node.props.frame?.height === hostHeight && node.props.frame?.width === 297)
+    assert.ok(stack, "Large content stack must use the measured height")
+    const spacing = stack.props.spacing ?? 0
+    const heights = stack.children.map(child => {
+      const h = child.props.frame?.height
+      assert.ok(Number.isFinite(h) && h > 0, "Every large section needs an explicit height")
+      return h
+    })
+    const total = heights.reduce((sum, h) => sum + h, 0) + spacing * (heights.length - 1)
+    assert.ok(total <= hostHeight + 0.001, `Large content ${total} exceeds ${hostHeight}`)
+  })
+}

@@ -566,3 +566,61 @@ for (const entry of entryPoints) {
     assert.equal(list.map(item => item.accessKeyId).join(","), `${oldConfig.accessKeyId},${newConfig.accessKeyId}`)
   })
 }
+
+function openSettingsForm(host) {
+  button(host.render(), labels.settings).action()
+  const settings = descendants(host.render()).find(node =>
+    typeof node.type === "function" && node.type.name === host.entry.settings)
+  assert.ok(settings, `Missing ${host.entry.settings}`)
+  // The console is done rendering; give the form its own hook slots.
+  host.hooks.slots.length = 0
+  const draw = () => host.hooks.render(() => settings.type(settings.props))
+  const field = (tree, label) => {
+    const row = descendants(tree).find(node => node.props?.accessibilityLabel === label)
+    assert.ok(row, `Missing ${label} row`)
+    return row.props
+  }
+  return { draw, field }
+}
+
+for (const entry of entryPoints) {
+  test(`${entry.file}: switching site clears the credentials and switching back restores them`, async t => {
+    const host = fixture(entry)
+    t.after(() => host.dispose())
+    const form = openSettingsForm(host)
+    let tree = form.draw()
+    assert.equal(form.field(tree, "\u8bbe\u7f6e ECS \u5b9e\u4f8b ID").detail, "i-old-test")
+    assert.equal(form.field(tree, "\u8bbe\u7f6e AccessKey Secret").detail, "\u5df2\u8bbe\u7f6e")
+    // No Dialog.actionSheet in the harness, so the site row toggles directly.
+    await form.field(tree, "\u8bbe\u7f6e\u8d26\u53f7\u7ad9\u70b9").action()
+    tree = form.draw()
+    assert.equal(form.field(tree, "\u8bbe\u7f6e\u8d26\u53f7\u7ad9\u70b9").detail, "\u56fd\u9645\u7ad9")
+    assert.equal(form.field(tree, "\u8bbe\u7f6e ECS \u5b9e\u4f8b ID").detail, "\u672a\u8bbe\u7f6e")
+    assert.equal(form.field(tree, "\u8bbe\u7f6e AccessKey Secret").detail, "\u672a\u8bbe\u7f6e")
+    assert.equal(form.field(tree, "\u8bbe\u7f6e AccessKey ID").detail, "\u672a\u8bbe\u7f6e")
+    assert.equal(descendants(tree).some(node => node.props?.accessibilityLabel === "\u5220\u9664\u6b64\u8d26\u53f7"), false,
+      "A not-yet-saved account has nothing to delete")
+    await form.field(tree, "\u8bbe\u7f6e\u8d26\u53f7\u7ad9\u70b9").action()
+    tree = form.draw()
+    assert.equal(form.field(tree, "\u8bbe\u7f6e\u8d26\u53f7\u7ad9\u70b9").detail, "\u4e2d\u56fd\u7ad9")
+    assert.equal(form.field(tree, "\u8bbe\u7f6e ECS \u5b9e\u4f8b ID").detail, "i-old-test")
+    assert.equal(form.field(tree, "\u8bbe\u7f6e AccessKey Secret").detail, "\u5df2\u8bbe\u7f6e")
+  })
+
+  test(`${entry.file}: switching site loads the account already saved for that site`, async t => {
+    const host = fixture(entry)
+    t.after(() => host.dispose())
+    const overseas = { ...newConfig, id: "intl-1", name: "\u56fd\u5916", site: "intl" }
+    host.storage.set("aliyun_cdt_accounts_v1", JSON.stringify([{ ...oldConfig, id: "default", site: "cn" }, overseas]))
+    const form = openSettingsForm(host)
+    let tree = form.draw()
+    await form.field(tree, "\u8bbe\u7f6e\u8d26\u53f7\u7ad9\u70b9").action()
+    tree = form.draw()
+    assert.equal(form.field(tree, "\u8bbe\u7f6e ECS \u5b9e\u4f8b ID").detail, "i-new-test")
+    assert.equal(form.field(tree, "\u8bbe\u7f6e\u8d26\u53f7\u540d\u79f0").detail, "\u56fd\u5916")
+    assert.ok(form.field(tree, "\u5220\u9664\u6b64\u8d26\u53f7"), "A saved account can be deleted")
+    await form.field(tree, "\u8bbe\u7f6e\u8d26\u53f7\u7ad9\u70b9").action()
+    tree = form.draw()
+    assert.equal(form.field(tree, "\u8bbe\u7f6e ECS \u5b9e\u4f8b ID").detail, "i-old-test")
+  })
+}

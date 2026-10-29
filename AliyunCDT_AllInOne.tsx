@@ -1882,9 +1882,9 @@ function DailyUsageBars({ data, width, chartHeight }: { data: SystemWidgetData; 
   const columnWidth = width / 7
   const barWidth = Math.min(22, Math.max(10, columnWidth - 14))
   return (
-    <ZStack frame={{ width, height: chartHeight + 36 }}>
-      <RoundedRectangle cornerRadius={8} style="continuous" fill={MEDIUM_COLORS.neutralPanel} frame={{ width, height: chartHeight + 36 }} />
-      <HStack spacing={0} alignment="bottom" frame={{ width, height: chartHeight + 36 }}>
+    <ZStack frame={{ width, height: chartHeight + 44 }}>
+      <RoundedRectangle cornerRadius={8} style="continuous" fill={MEDIUM_COLORS.neutralPanel} frame={{ width, height: chartHeight + 44 }} />
+      <HStack spacing={0} alignment="bottom" frame={{ width, height: chartHeight + 44 }}>
         {points.map(point => {
           const value = point.valueGB
           const fillHeight = value === null || value <= 0 ? 0 : Math.max(4, Math.round((value / maximum) * chartHeight))
@@ -1921,26 +1921,32 @@ function DailyUsageBars({ data, width, chartHeight }: { data: SystemWidgetData; 
 function LargeWidgetContent({ data, width, height }: { data: SystemWidgetData; width: number; height: number }) {
   const gap = 10
   const tileWidth = (width - gap) / 2
-  const chartHeight = Math.max(48, Math.min(96, height - 236))
+  // 每个区块都用固定高度，图表高度吃掉剩余空间，区块间距按余量自适应，
+  // 这样无论机型的大号组件有多高，内容总高度都不会超出可用高度。
+  const fixedHeight = 216
+  const free = height - 4 - fixedHeight
+  const chartHeight = Math.max(28, Math.min(96, Math.floor(free - 40)))
+  const sectionGap = Math.max(4, Math.min(14, Math.floor((free - chartHeight) / 5)))
   return (
-    <VStack alignment="leading" spacing={0} frame={{ width, height, alignment: "topLeading" }}>
-      <WidgetTitleRow data={data} />
-      <Spacer />
-      <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>本月出网</Text>
-      <HStack alignment="lastTextBaseline" spacing={3} frame={{ width }}>
-        <Text font={34} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.6} foregroundStyle="label">
-          {data.totalGB.toFixed(2)}
-        </Text>
-        <Text font={14} fontWeight="semibold" foregroundStyle="secondaryLabel">GB</Text>
-        <Spacer />
-        <Text font={12} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
-          {data.percentage.toFixed(1)}% · 共 {data.thresholdGB} GB
-        </Text>
-      </HStack>
-      <Spacer />
+    <VStack alignment="leading" spacing={sectionGap} frame={{ width, height, alignment: "topLeading" }}>
+      <VStack alignment="leading" spacing={0} frame={{ width, height: 16, alignment: "leading" }}>
+        <WidgetTitleRow data={data} />
+      </VStack>
+      <VStack alignment="leading" spacing={0} frame={{ width, height: 56, alignment: "topLeading" }}>
+        <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>本月出网</Text>
+        <HStack alignment="lastTextBaseline" spacing={3} frame={{ width }}>
+          <Text font={34} fontWeight="bold" monospacedDigit lineLimit={1} minScaleFactor={0.6} foregroundStyle="label">
+            {data.totalGB.toFixed(2)}
+          </Text>
+          <Text font={14} fontWeight="semibold" foregroundStyle="secondaryLabel">GB</Text>
+          <Spacer />
+          <Text font={12} monospacedDigit lineLimit={1} foregroundStyle="secondaryLabel">
+            {data.percentage.toFixed(1)}% · 共 {data.thresholdGB} GB
+          </Text>
+        </HStack>
+      </VStack>
       <UsageBar data={data} width={width} height={6} />
-      <Spacer />
-      <VStack spacing={8} alignment="leading">
+      <VStack spacing={8} alignment="leading" frame={{ width, height: 80, alignment: "topLeading" }}>
         <HStack spacing={gap} alignment="top">
           <LargeMetric label="参考余量" value={data.remainingGB.toFixed(2)} unit="GB" width={tileWidth} />
           <LargeMetric label="日均可用" value={data.dailyBudgetGB} unit="GB" width={tileWidth} />
@@ -1950,8 +1956,7 @@ function LargeWidgetContent({ data, width, height }: { data: SystemWidgetData; w
           <LargeMetric label="近 7 日" value={formatDailyUsage(data.sevenDayTotalGB)} unit="GB" width={tileWidth} />
         </HStack>
       </VStack>
-      <Spacer />
-      <HStack alignment="center" frame={{ width }} padding={{ bottom: 5 }}>
+      <HStack alignment="center" frame={{ width, height: 14 }}>
         <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>每日用量</Text>
         <Spacer />
         <Text font={10} foregroundStyle="tertiaryLabel" lineLimit={1}>本机采样估算 · GB</Text>
@@ -1963,7 +1968,7 @@ function LargeWidgetContent({ data, width, height }: { data: SystemWidgetData; w
 
 function LargeMetric({ label, value, unit, width }: { label: string; value: string; unit: string; width: number }) {
   return (
-    <VStack alignment="leading" spacing={1} frame={{ width, alignment: "topLeading" }}>
+    <VStack alignment="leading" spacing={1} frame={{ width, height: 36, alignment: "topLeading" }}>
       <Text font={11} foregroundStyle="secondaryLabel" lineLimit={1}>{label}</Text>
       <HStack alignment="lastTextBaseline" spacing={2}>
         <Text font={17} fontWeight="semibold" monospacedDigit lineLimit={1} minScaleFactor={0.75} foregroundStyle="label">
@@ -2393,6 +2398,8 @@ function SettingsComponent({
   const [successNotice, setSuccessNotice] = useState<string | null>(null)
   const [accountName, setAccountName] = useState(currentConfig.name || "")
   const [site, setSite] = useState(currentConfig.site === "intl" ? "intl" : "cn")
+  const [accountId, setAccountId] = useState(currentConfig.id || "")
+  const [siteDrafts, setSiteDrafts] = useState<Record<string, any>>({})
 
   // 智能剪贴板识别与导入
   const handleSmartPaste = async () => {
@@ -2536,9 +2543,56 @@ function SettingsComponent({
     }
   }
 
+  // 切换站点 = 切换到另一个账号：当前表单存为草稿，载入目标站点已保存（或之前输入）的内容，
+  // 目标站点还没有账号时清空，让用户重新输入；切回来时原内容原样还原。
+  const applySite = (next: string) => {
+    if (next === site) return
+    const drafts = {
+      ...siteDrafts,
+      [site]: { ak, sk, region, ecsId, threshold, cutoffReference, accountName, accountId }
+    }
+    setSiteDrafts(drafts)
+    let target = drafts[next]
+    if (!target) {
+      const saved = loadAccountProfiles<AppConfig>(DEFAULT_CONFIG).find(item => (item.site === "intl" ? "intl" : "cn") === next)
+      target = saved
+        ? {
+            ak: saved.accessKeyId || "",
+            sk: saved.accessKeySecret || "",
+            region: saved.regionId || "cn-hongkong",
+            ecsId: saved.ecsInstanceId || "",
+            threshold: String(saved.trafficThresholdGB || DEFAULT_CONFIG.trafficThresholdGB),
+            cutoffReference: String(saved.vpsCutoffReferenceGB || DEFAULT_CONFIG.vpsCutoffReferenceGB),
+            accountName: saved.name || "",
+            accountId: saved.id || ""
+          }
+        : {
+            ak: "",
+            sk: "",
+            region: DEFAULT_CONFIG.regionId,
+            ecsId: "",
+            threshold: String(DEFAULT_CONFIG.trafficThresholdGB),
+            cutoffReference: String(DEFAULT_CONFIG.vpsCutoffReferenceGB),
+            accountName: "",
+            accountId: ""
+          }
+    }
+    setAk(target.ak)
+    setSk(target.sk)
+    setRegion(target.region)
+    setEcsId(target.ecsId)
+    setThreshold(target.threshold)
+    setCutoffReference(target.cutoffReference)
+    setAccountName(target.accountName)
+    setAccountId(target.accountId)
+    setSite(next)
+    setErrorNotice(null)
+    setSuccessNotice(null)
+  }
+
   const handleSelectSite = async () => {
     if (typeof Dialog === "undefined" || !Dialog.actionSheet) {
-      setSite(site === "intl" ? "cn" : "intl")
+      applySite(site === "intl" ? "cn" : "intl")
       return
     }
     const idx = await Dialog.actionSheet({
@@ -2550,12 +2604,12 @@ function SettingsComponent({
         { label: `国际站 alibabacloud.com${site === "intl" ? " ✓" : ""}` }
       ]
     })
-    if (idx === 0) setSite("cn")
-    else if (idx === 1) setSite("intl")
+    if (idx === 0) applySite("cn")
+    else if (idx === 1) applySite("intl")
   }
 
   const handleDelete = async () => {
-    if (!onDelete || !currentConfig.id) return
+    if (!onDelete || !accountId) return
     const label = accountDisplayName({ name: accountName, site })
     let confirmed = true
     if (typeof Dialog !== "undefined" && Dialog.confirm) {
@@ -2566,7 +2620,7 @@ function SettingsComponent({
         confirmLabel: "删除"
       } as any)
     }
-    if (confirmed) onDelete(currentConfig.id)
+    if (confirmed) onDelete(accountId)
   }
 
   const handleSave = () => {
@@ -2592,7 +2646,7 @@ function SettingsComponent({
       trafficThresholdGB: numThreshold,
       vpsCutoffReferenceGB: numCutoffReference,
       resetDayOfMonth: 1,
-      id: currentConfig.id || newAccountId(),
+      id: accountId || newAccountId(),
       name: accountName.trim(),
       site
     }
@@ -2684,7 +2738,7 @@ function SettingsComponent({
       action={handleSelectSite}
     />
   )
-  const deleteRow = onDelete && currentConfig.id ? (
+  const deleteRow = onDelete && accountId && loadAccountProfiles<AppConfig>(DEFAULT_CONFIG).some(item => item.id === accountId) ? (
     <Button action={handleDelete} buttonStyle="plain" accessibilityLabel="删除此账号" frame={{ maxWidth: Infinity }}>
       <Text font="body" foregroundStyle="systemRed" padding={{ vertical: 2 }} frame={{ maxWidth: Infinity, alignment: "center" }}>
         删除此账号
